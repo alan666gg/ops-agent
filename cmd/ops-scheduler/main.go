@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/alan666gg/ops-agent/internal/audit"
@@ -31,6 +32,7 @@ func main() {
 	notifyRecovery := flag.Bool("notify-recovery", true, "send notification when an incident recovers below the notify threshold")
 	notifyTriggerAfter := flag.Int("notify-trigger-after", 1, "open an incident only after this many consecutive unhealthy cycles")
 	notifyRecoveryAfter := flag.Int("notify-recovery-after", 1, "close an incident only after this many consecutive healthy cycles")
+	notifyConfigFile := flag.String("notify-config", "", "notification routing config file (replaces direct notifier flags)")
 	once := flag.Bool("once", false, "run one cycle and exit")
 	flag.Parse()
 	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
@@ -43,6 +45,10 @@ func main() {
 	}
 	if err := notify.ValidateThreshold("notify-recovery-after", *notifyRecoveryAfter); err != nil {
 		fmt.Println(err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*notifyConfigFile) != "" && (strings.TrimSpace(*notifyWebhook) != "" || strings.TrimSpace(*slackWebhook) != "" || strings.TrimSpace(*telegramBotToken) != "" || strings.TrimSpace(*telegramChatID) != "") {
+		fmt.Println("use either --notify-config or direct notifier flags, not both")
 		os.Exit(1)
 	}
 
@@ -58,12 +64,26 @@ func main() {
 	}
 	_ = os.MkdirAll("audit", 0o755)
 	notifier := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
+	var resolver notify.DeliveryResolver
+	if strings.TrimSpace(*notifyConfigFile) != "" {
+		routingCfg, err := notify.LoadRouting(*notifyConfigFile)
+		if err != nil {
+			fmt.Println("notification config invalid:", err)
+			os.Exit(1)
+		}
+		resolver, err = routingCfg.BuildResolver()
+		if err != nil {
+			fmt.Println("notification config invalid:", err)
+			os.Exit(1)
+		}
+	}
 	notifyCtl := notify.NewController(notifier, notify.NewSQLiteStore(*notifyStateFile), notify.ControllerOptions{
 		MinSeverity:    *notifyMin,
 		RepeatInterval: *notifyRepeat,
 		NotifyRecovery: *notifyRecovery,
 		TriggerAfter:   *notifyTriggerAfter,
 		RecoveryAfter:  *notifyRecoveryAfter,
+		Resolver:       resolver,
 	})
 
 	run := func() {
@@ -93,7 +113,7 @@ func main() {
 				Message: r.Code + ": " + r.Message,
 			})
 		}
-		if notifier != nil {
+		if notifyCtl.Enabled() {
 			decision, err := notifyCtl.Process(ctx, report)
 			if err != nil {
 				_ = audit.AppendJSONL(*auditFile, audit.Event{

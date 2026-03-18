@@ -43,7 +43,6 @@ type server struct {
 	approvalStore approvalBackend
 	metrics       *apiMetrics
 	limiter       *rateLimiter
-	notifier      notify.Notifier
 	notifyCtl     notify.Controller
 	notifyMin     string
 	mu            sync.Mutex
@@ -170,6 +169,7 @@ func main() {
 	notifyRecovery := flag.Bool("notify-recovery", true, "send notification when an incident recovers below the notify threshold")
 	notifyTriggerAfter := flag.Int("notify-trigger-after", 1, "open an incident only after this many consecutive unhealthy cycles")
 	notifyRecoveryAfter := flag.Int("notify-recovery-after", 1, "close an incident only after this many consecutive healthy cycles")
+	notifyConfigFile := flag.String("notify-config", "", "notification routing config file (replaces direct notifier flags)")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	flag.Parse()
 	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
@@ -184,6 +184,10 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+	if strings.TrimSpace(*notifyConfigFile) != "" && (strings.TrimSpace(*notifyWebhook) != "" || strings.TrimSpace(*slackWebhook) != "" || strings.TrimSpace(*telegramBotToken) != "" || strings.TrimSpace(*telegramChatID) != "") {
+		fmt.Println("use either --notify-config or direct notifier flags, not both")
+		os.Exit(1)
+	}
 
 	store, err := newApprovalBackend(*pendingDriver, *pendingFile)
 	if err != nil {
@@ -192,6 +196,19 @@ func main() {
 
 	_ = os.MkdirAll("audit", 0o755)
 	notifierImpl := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
+	var resolver notify.DeliveryResolver
+	if strings.TrimSpace(*notifyConfigFile) != "" {
+		routingCfg, err := notify.LoadRouting(*notifyConfigFile)
+		if err != nil {
+			fmt.Println("notification config invalid:", err)
+			os.Exit(1)
+		}
+		resolver, err = routingCfg.BuildResolver()
+		if err != nil {
+			fmt.Println("notification config invalid:", err)
+			os.Exit(1)
+		}
+	}
 	s := &server{
 		envFile:       *envFile,
 		policyFile:    *policyFile,
@@ -199,13 +216,13 @@ func main() {
 		token:         strings.TrimSpace(*token),
 		approvalStore: store,
 		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
-		notifier:      notifierImpl,
 		notifyCtl: notify.NewController(notifierImpl, notify.NewSQLiteStore(*notifyStateFile), notify.ControllerOptions{
 			MinSeverity:    *notifyMin,
 			RepeatInterval: *notifyRepeat,
 			NotifyRecovery: *notifyRecovery,
 			TriggerAfter:   *notifyTriggerAfter,
 			RecoveryAfter:  *notifyRecoveryAfter,
+			Resolver:       resolver,
 		}),
 		notifyMin: strings.ToLower(strings.TrimSpace(*notifyMin)),
 		metrics: &apiMetrics{
@@ -333,7 +350,7 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "health_run", Env: envName, Target: envName + "/" + rs.Name, Status: sev, Message: rs.Code + ": " + rs.Message})
 	}
-	if s.notifier != nil && truthy(r.URL.Query().Get("notify")) {
+	if s.notifyCtl.Enabled() && truthy(r.URL.Query().Get("notify")) {
 		decision, err := s.notifyCtl.Process(r.Context(), report)
 		if err != nil {
 			_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Env: envName, Status: "failed", Message: err.Error()})

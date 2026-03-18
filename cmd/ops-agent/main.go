@@ -12,6 +12,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
+	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
 )
 
@@ -38,7 +39,7 @@ func usage() {
 	fmt.Println("ops-agent commands:")
 	fmt.Println("  health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1:6379")
 	fmt.Println("  policy --action <" + strings.Join(actions.Names(), "|") + "> --env test --policy configs/policies.yaml --audit audit.jsonl")
-	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml")
+	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml")
 }
 
 func runHealth(args []string) {
@@ -131,6 +132,7 @@ func runValidate(args []string) {
 	fs := flag.NewFlagSet("validate", flag.ExitOnError)
 	envFile := fs.String("env-file", "configs/environments.yaml", "environment config file")
 	policyFile := fs.String("policy", "configs/policies.yaml", "policy file")
+	notifyConfigFile := fs.String("notify-config", "", "notification routing config file")
 	_ = fs.Parse(args)
 
 	envCfg, err := config.LoadEnvironments(*envFile)
@@ -149,6 +151,19 @@ func runValidate(args []string) {
 		len(policyCfg.Policies.AutoActions.Allowed),
 		len(policyCfg.Policies.AutoActions.RequireApproval),
 	)
+	if strings.TrimSpace(*notifyConfigFile) != "" {
+		notifyCfg, err := notify.LoadRouting(*notifyConfigFile)
+		if err != nil {
+			fmt.Println("notification config invalid:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("notification config valid: %d receivers, %d routes, %d silences, %d maintenance windows\n",
+			len(notifyCfg.Receivers),
+			len(notifyCfg.Routes),
+			len(notifyCfg.Silences),
+			len(notifyCfg.MaintenanceWindows),
+		)
+	}
 }
 
 func splitCSV(s string) []string {

@@ -1,0 +1,63 @@
+default_receiver: ops-webhook
+
+receivers:
+  ops-webhook:
+    webhook: https://example.com/hooks/ops
+  ops-slack:
+    slack_webhook: https://hooks.slack.com/services/T000/B000/XXXX
+  ops-telegram:
+    telegram_bot_token: "123456:replace-me"
+    telegram_chat_id: "-1001234567890"
+
+routes:
+  - name: prod-page
+    receiver: ops-slack
+    match:
+      env:
+        - prod
+        - production
+      severity:
+        - fail
+
+  - name: prod-warn
+    receiver: ops-telegram
+    match:
+      env:
+        - prod
+        - production
+      severity:
+        - warn
+
+  - name: fallback
+    receiver: ops-webhook
+    match:
+      severity:
+        - warn
+        - fail
+
+maintenance_windows:
+  - name: prod-release-window
+    reason: planned weekly deploy
+    match:
+      env:
+        - prod
+    recurring:
+      timezone: Asia/Shanghai
+      weekdays:
+        - sat
+      start: "02:00"
+      end: "04:00"
+
+silences:
+  - name: prod-known-incident
+    reason: upstream dependency outage
+    starts_at: 2026-03-18T09:00:00+08:00
+    ends_at: 2026-03-18T11:00:00+08:00
+    match:
+      env:
+        - prod
+      source:
+        - ops-scheduler
+      severity:
+        - warn
+        - fail

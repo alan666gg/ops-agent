@@ -11,6 +11,7 @@ import (
 
 type Controller struct {
 	Notifier       Notifier
+	Resolver       DeliveryResolver
 	Store          Store
 	MinSeverity    string
 	RepeatInterval time.Duration
@@ -26,6 +27,7 @@ type ControllerOptions struct {
 	NotifyRecovery bool
 	TriggerAfter   int
 	RecoveryAfter  int
+	Resolver       DeliveryResolver
 }
 
 type Decision struct {
@@ -34,7 +36,7 @@ type Decision struct {
 }
 
 func (c Controller) Process(ctx context.Context, report incident.Report) (Decision, error) {
-	if c.Notifier == nil || c.Store == nil {
+	if !c.Enabled() {
 		return Decision{Send: false, Reason: "notifier disabled"}, nil
 	}
 	now := time.Now().UTC()
@@ -50,15 +52,43 @@ func (c Controller) Process(ctx context.Context, report incident.Report) (Decisi
 	next, decision := c.decide(report, prev, ok, now)
 	next.Key = key
 	if decision.Send {
-		if err := c.Notifier.Notify(ctx, report); err != nil {
-			return Decision{}, err
+		delivery := Delivery{Allowed: true, Notifier: c.Notifier}
+		if c.Resolver != nil {
+			delivery = c.Resolver.Resolve(report, now)
 		}
-		next.LastNotifiedAt = now
+		if !delivery.Allowed || delivery.Notifier == nil {
+			decision.Send = false
+			decision.Reason = joinReasons(decision.Reason, delivery.Reason)
+		} else {
+			if err := delivery.Notifier.Notify(ctx, report); err != nil {
+				return Decision{}, err
+			}
+			next.LastNotifiedAt = now
+			decision.Reason = joinReasons(decision.Reason, delivery.Reason)
+		}
 	}
 	if err := c.Store.Put(next); err != nil {
 		return Decision{}, err
 	}
 	return decision, nil
+}
+
+func (c Controller) Enabled() bool {
+	if c.Store == nil {
+		return false
+	}
+	return c.Notifier != nil || c.Resolver != nil
+}
+
+func joinReasons(parts ...string) string {
+	var clean []string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	return strings.Join(clean, "; ")
 }
 
 func (c Controller) decide(report incident.Report, prev State, ok bool, now time.Time) (State, Decision) {
@@ -105,6 +135,9 @@ func (c Controller) decide(report incident.Report, prev State, ok bool, now time
 		next.Open = true
 		next.OpenStatus = report.Status
 		next.OpenFingerprint = report.Fingerprint
+		if prev.LastNotifiedAt.IsZero() {
+			return next, Decision{Send: true, Reason: "pending first delivery"}
+		}
 		if currentRank > severityRank(prev.OpenStatus) {
 			return next, Decision{Send: true, Reason: "severity escalated"}
 		}
@@ -137,6 +170,9 @@ func (c Controller) decide(report incident.Report, prev State, ok bool, now time
 	next.OpenStatus = ""
 	next.OpenFingerprint = ""
 	next.RecoveryStreak = 0
+	if prev.LastNotifiedAt.IsZero() {
+		return next, Decision{Send: false, Reason: "recovered before notification"}
+	}
 	if c.NotifyRecovery {
 		return next, Decision{Send: true, Reason: "recovery"}
 	}
@@ -146,6 +182,7 @@ func (c Controller) decide(report incident.Report, prev State, ok bool, now time
 func NewController(notifier Notifier, store Store, opts ControllerOptions) Controller {
 	return Controller{
 		Notifier:       notifier,
+		Resolver:       opts.Resolver,
 		Store:          store,
 		MinSeverity:    strings.ToLower(strings.TrimSpace(opts.MinSeverity)),
 		RepeatInterval: opts.RepeatInterval,
