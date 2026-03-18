@@ -5,3 +5,4 @@ secrets/
 __pycache__/
 audit/*.jsonl
 audit/*.json
+audit/*.db
