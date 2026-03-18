@@ -104,12 +104,13 @@ func (l *rateLimiter) allow(key string) bool {
 }
 
 type actionRequest struct {
-	Action   string   `json:"action"`
-	Env      string   `json:"env,omitempty"`
-	Args     []string `json:"args"`
-	Approved bool     `json:"approved"`
-	Actor    string   `json:"actor"`
-	TimeoutS int      `json:"timeout_seconds"`
+	Action     string   `json:"action"`
+	Env        string   `json:"env,omitempty"`
+	TargetHost string   `json:"target_host,omitempty"`
+	Args       []string `json:"args"`
+	Approved   bool     `json:"approved"`
+	Actor      string   `json:"actor"`
+	TimeoutS   int      `json:"timeout_seconds"`
 }
 
 type requestActionResponse struct {
@@ -336,6 +337,12 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 	if req.Env == "" {
 		req.Env = "test"
 	}
+	req.TargetHost = strings.TrimSpace(req.TargetHost)
+	targetHost, err := s.resolveTargetHost(req.Env, req.TargetHost)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
 
 	cfg, err := policy.Load(s.policyFile)
 	if err != nil {
@@ -349,19 +356,19 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 	}
 	decision := cfg.Evaluate(req.Action, req.Env, recentAutoActions)
 	if !decision.Allowed {
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, Status: "denied", Message: decision.Reason})
+		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "denied", Message: decision.Reason})
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(actionResponse{Status: "denied", Message: decision.Reason})
 		return
 	}
 	if decision.RequiresApproval && !req.Approved {
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
+		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(actionResponse{Status: "approval_required", Message: decision.Reason + " (use /actions/request + /actions/approve)"})
 		return
 	}
 
-	res := runAction(req.Action, req.Args, req.TimeoutS)
+	res := runAction(req.Action, req.Args, req.TimeoutS, targetHost)
 	s.actionRecord(req.Action, res.Err == nil)
 	status := "ok"
 	message := "action executed"
@@ -369,7 +376,7 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 		status = "failed"
 		message = res.Err.Error()
 	}
-	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, Status: status, Message: strings.TrimSpace(res.Output), RequiresOK: decision.RequiresApproval})
+	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: status, Message: strings.TrimSpace(res.Output), RequiresOK: decision.RequiresApproval})
 
 	if res.Err != nil {
 		w.WriteHeader(http.StatusBadGateway)
@@ -397,6 +404,12 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 	if req.Env == "" {
 		req.Env = "test"
 	}
+	req.TargetHost = strings.TrimSpace(req.TargetHost)
+	targetHost, err := s.resolveTargetHost(req.Env, req.TargetHost)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
 	cfg, err := policy.Load(s.policyFile)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
@@ -416,7 +429,7 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 
 	rid := newID()
 	now := time.Now().UTC()
-	entry := approval.Request{ID: rid, Action: req.Action, Env: req.Env, Args: req.Args, Actor: req.Actor, RequiresApproval: decision.RequiresApproval, Status: "pending", CreatedAt: now, UpdatedAt: now}
+	entry := approval.Request{ID: rid, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Args: req.Args, Actor: req.Actor, RequiresApproval: decision.RequiresApproval, Status: "pending", CreatedAt: now, UpdatedAt: now}
 
 	s.mu.Lock()
 	err = s.approvalStore.Create(entry)
@@ -425,10 +438,10 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
-	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: now, Actor: req.Actor, Action: req.Action, Env: req.Env, Status: "pending", Message: "action request created", RequiresOK: decision.RequiresApproval})
+	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: now, Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "pending", Message: "action request created", RequiresOK: decision.RequiresApproval})
 
 	if !decision.RequiresApproval {
-		res := runAction(req.Action, req.Args, req.TimeoutS)
+		res := runAction(req.Action, req.Args, req.TimeoutS, targetHost)
 		s.actionRecord(req.Action, res.Err == nil)
 		newStatus := "executed"
 		result := strings.TrimSpace(res.Output)
@@ -445,7 +458,7 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 		s.mu.Unlock()
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, Status: newStatus, Message: result})
+		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: newStatus, Message: result})
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(requestActionResponse{Status: newStatus, Message: result, RequestID: rid})
 		return
@@ -488,7 +501,12 @@ func (s *server) handleApproveAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := runAction(entry.Action, entry.Args, req.TimeoutS)
+	targetHost, err := s.resolveTargetHost(entry.Env, entry.TargetHost)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	res := runAction(entry.Action, entry.Args, req.TimeoutS, targetHost)
 	s.actionRecord(entry.Action, res.Err == nil)
 	finalStatus := "executed"
 	result := strings.TrimSpace(res.Output)
@@ -508,7 +526,7 @@ func (s *server) handleApproveAction(w http.ResponseWriter, r *http.Request) {
 	})
 	s.mu.Unlock()
 
-	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Env: entry.Env, Status: finalStatus, Message: result, RequiresOK: entry.RequiresApproval})
+	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Env: entry.Env, TargetHost: entry.TargetHost, Target: entry.TargetHost, Status: finalStatus, Message: result, RequiresOK: entry.RequiresApproval})
 	if res.Err != nil {
 		w.WriteHeader(http.StatusBadGateway)
 	}
@@ -551,7 +569,7 @@ func (s *server) handleRejectAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
-	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Env: entry.Env, Status: "denied", Message: req.Reason, RequiresOK: entry.RequiresApproval})
+	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Env: entry.Env, TargetHost: entry.TargetHost, Target: entry.TargetHost, Status: "denied", Message: req.Reason, RequiresOK: entry.RequiresApproval})
 	_ = json.NewEncoder(w).Encode(actionResponse{Status: "denied", Message: "request rejected"})
 }
 
@@ -755,6 +773,11 @@ func (s *server) validateActionRequest(req actionRequest) error {
 			return fmt.Errorf("invalid env")
 		}
 	}
+	if targetHost := strings.TrimSpace(req.TargetHost); targetHost != "" {
+		if len(targetHost) > 120 || strings.Contains(targetHost, "\n") {
+			return fmt.Errorf("invalid target_host")
+		}
+	}
 	if _, ok := actions.Lookup(req.Action); !ok {
 		return fmt.Errorf("unsupported action")
 	}
@@ -781,6 +804,26 @@ func clientIP(r *http.Request) string {
 		return "unknown"
 	}
 	return host
+}
+
+func (s *server) resolveTargetHost(envName, targetHost string) (*config.Host, error) {
+	targetHost = strings.TrimSpace(targetHost)
+	if targetHost == "" {
+		return nil, nil
+	}
+	cfg, err := config.LoadEnvironments(s.envFile)
+	if err != nil {
+		return nil, err
+	}
+	env, ok := cfg.Environment(envName)
+	if !ok {
+		return nil, fmt.Errorf("env not found: %s", envName)
+	}
+	host, ok := env.HostByName(targetHost)
+	if !ok {
+		return nil, fmt.Errorf("target_host %q not found in env %q", targetHost, envName)
+	}
+	return &host, nil
 }
 
 func (s *server) resolveAuditFile(name string) (string, error) {
@@ -876,10 +919,10 @@ func newID() string {
 	return "req_" + hex.EncodeToString(b)
 }
 
-func runAction(action string, args []string, timeoutS int) rbexec.Result {
+func runAction(action string, args []string, timeoutS int, host *config.Host) rbexec.Result {
 	timeout := 30 * time.Second
 	if timeoutS > 0 {
 		timeout = time.Duration(timeoutS) * time.Second
 	}
-	return rbexec.RunAction(context.Background(), action, args, timeout)
+	return rbexec.RunAction(context.Background(), action, args, timeout, rbexec.Options{Host: host})
 }

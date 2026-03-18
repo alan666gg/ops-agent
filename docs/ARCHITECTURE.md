@@ -5,6 +5,7 @@
 - API exposes health/incidents/actions and approval workflows.
 - All actions are audited.
 - Action definitions are centralized in a shared registry.
+- Runbooks execute locally by default and can be sent over SSH to a configured environment host.
 
 Flow:
 1. detect issue

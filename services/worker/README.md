@@ -12,3 +12,4 @@ Notes:
 
 - `--env prod` or `--env production` enables production policy guardrails.
 - Production-safe actions can still be upgraded to approval-required based on `configs/policies.yaml`.
+- `--target-host <name>` runs the runbook on the named host from `--env-file` via SSH.

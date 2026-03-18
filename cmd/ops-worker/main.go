@@ -10,6 +10,7 @@ import (
 
 	"github.com/alan666gg/ops-agent/internal/actions"
 	"github.com/alan666gg/ops-agent/internal/audit"
+	"github.com/alan666gg/ops-agent/internal/config"
 	rbexec "github.com/alan666gg/ops-agent/internal/exec"
 	"github.com/alan666gg/ops-agent/internal/policy"
 )
@@ -17,6 +18,8 @@ import (
 func main() {
 	action := flag.String("action", "", "action name, one of: "+strings.Join(actions.Names(), "|"))
 	env := flag.String("env", "test", "environment name for policy evaluation")
+	envFile := flag.String("env-file", "configs/environments.yaml", "environment config file")
+	targetHost := flag.String("target-host", "", "host name from the environment config to execute on via ssh")
 	argsRaw := flag.String("args", "", "comma-separated args passed to runbook")
 	policyFile := flag.String("policy", "configs/policies.yaml", "policy file path")
 	auditFile := flag.String("audit", "audit/worker.jsonl", "audit output jsonl")
@@ -27,6 +30,18 @@ func main() {
 
 	if strings.TrimSpace(*action) == "" {
 		fmt.Println("--action is required")
+		os.Exit(1)
+	}
+	*targetHost = strings.TrimSpace(*targetHost)
+	if host := *targetHost; host != "" {
+		if len(host) > 120 || strings.Contains(host, "\n") {
+			fmt.Println("invalid --target-host")
+			os.Exit(1)
+		}
+	}
+	host, err := loadTargetHost(*envFile, *env, *targetHost)
+	if err != nil {
+		fmt.Println("resolve target host error:", err)
 		os.Exit(1)
 	}
 
@@ -43,23 +58,23 @@ func main() {
 	}
 	decision := cfg.Evaluate(*action, *env, recentAutoActions)
 	if !decision.Allowed {
-		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, Status: "denied", Message: decision.Reason})
+		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "denied", Message: decision.Reason})
 		fmt.Println("denied:", decision.Reason)
 		os.Exit(2)
 	}
 	if decision.RequiresApproval && !*approved {
-		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
+		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
 		fmt.Println("approval required:", decision.Reason)
 		os.Exit(3)
 	}
 
 	args := parseArgs(*argsRaw)
 	if err := actions.ValidateArgs(*action, args); err != nil {
-		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, Status: "denied", Message: err.Error()})
+		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "denied", Message: err.Error()})
 		fmt.Println("invalid action args:", err)
 		os.Exit(2)
 	}
-	res := rbexec.RunAction(context.Background(), *action, args, *timeout)
+	res := rbexec.RunAction(context.Background(), *action, args, *timeout, rbexec.Options{Host: host})
 	status := "ok"
 	msg := res.Output
 	if res.Err != nil {
@@ -68,7 +83,7 @@ func main() {
 			msg = res.Err.Error()
 		}
 	}
-	emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, Status: status, Message: msg, RequiresOK: decision.RequiresApproval})
+	emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: status, Message: msg, RequiresOK: decision.RequiresApproval})
 
 	if res.Output != "" {
 		fmt.Println(res.Output)
@@ -97,4 +112,24 @@ func parseArgs(raw string) []string {
 func emit(path string, evt audit.Event) {
 	_ = os.MkdirAll("audit", 0o755)
 	_ = audit.AppendJSONL(path, evt)
+}
+
+func loadTargetHost(envFile, envName, targetHost string) (*config.Host, error) {
+	targetHost = strings.TrimSpace(targetHost)
+	if targetHost == "" {
+		return nil, nil
+	}
+	cfg, err := config.LoadEnvironments(envFile)
+	if err != nil {
+		return nil, err
+	}
+	env, ok := cfg.Environment(envName)
+	if !ok {
+		return nil, fmt.Errorf("env not found: %s", envName)
+	}
+	host, ok := env.HostByName(targetHost)
+	if !ok {
+		return nil, fmt.Errorf("target host %q not found in env %q", targetHost, envName)
+	}
+	return &host, nil
 }

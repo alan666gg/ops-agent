@@ -48,6 +48,9 @@ go run ./cmd/ops-worker --action check_host_health --env test --policy configs/p
 
 # action requiring approval
 go run ./cmd/ops-worker --action restart_container --env prod --args cicdtest-app --policy configs/policies.yaml --audit audit/worker.jsonl --approved
+
+# run the action on a configured ssh host in the environment
+go run ./cmd/ops-worker --action restart_container --env prod --env-file configs/environments.yaml --target-host app-1 --args cicdtest-app --policy configs/policies.yaml --audit audit/worker.jsonl --approved
 ```
 
 API (minimal control plane):
@@ -68,6 +71,12 @@ curl -s -X POST http://127.0.0.1:8090/actions/run \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $OPS_API_TOKEN" \
   -d '{"action":"check_host_health","env":"test","actor":"local-dev"}'
+
+# execute on a remote host declared in the environment config
+curl -s -X POST http://127.0.0.1:8090/actions/run \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -d '{"action":"restart_container","env":"prod","target_host":"app-1","args":["cicdtest-app"],"approved":true,"actor":"local-dev"}'
 
 # request approval-required action
 REQ_ID=$(curl -s -X POST http://127.0.0.1:8090/actions/request \
@@ -97,3 +106,4 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `policies.production.require_human_approval=true` upgrades otherwise-safe actions to approval-required in production.
 - `policies.production.max_auto_actions_per_hour` limits unattended production actions per hour; excess requests are converted to approval-required.
 - `GET /audit/tail` only reads `.jsonl` files inside the configured audit directory.
+- `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.

@@ -15,6 +15,7 @@ type Event struct {
 	Actor      string    `json:"actor"`
 	Action     string    `json:"action"`
 	Env        string    `json:"env,omitempty"`
+	TargetHost string    `json:"target_host,omitempty"`
 	Target     string    `json:"target,omitempty"`
 	Status     string    `json:"status"`
 	Message    string    `json:"message,omitempty"`

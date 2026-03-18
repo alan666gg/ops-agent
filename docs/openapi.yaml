@@ -53,6 +53,8 @@ paths:
                 env:
                   type: string
                   default: test
+                target_host:
+                  type: string
                 args:
                   type: array
                   items: { type: string }
@@ -137,6 +139,8 @@ paths:
                 env:
                   type: string
                   default: test
+                target_host:
+                  type: string
                 args:
                   type: array
                   items: { type: string }

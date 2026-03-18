@@ -14,8 +14,8 @@ Endpoints:
 - `GET /ready` (no token)
 - `GET /metrics` (no token, Prometheus text format)
 - `GET /health/run?env=test` (Bearer token)
-- `POST /actions/run` (Bearer token; direct mode; request body supports `env`)
-- `POST /actions/request` (Bearer token; creates approval ticket; request body supports `env`)
+- `POST /actions/run` (Bearer token; direct mode; request body supports `env` and optional `target_host`)
+- `POST /actions/request` (Bearer token; creates approval ticket; request body supports `env` and optional `target_host`)
 - `GET /actions/pending` (Bearer token)
 - `GET /actions/list?status=pending|executed|failed|denied|expired` (Bearer token)
 - `POST /actions/approve` (Bearer token)
@@ -24,3 +24,5 @@ Endpoints:
 - `GET /incidents/summary?minutes=60` (Bearer token)
 
 OpenAPI draft: `docs/openapi.yaml`
+
+If `target_host` is provided, the API resolves that host from the selected environment and runs the runbook over SSH.

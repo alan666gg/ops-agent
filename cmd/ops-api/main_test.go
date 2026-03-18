@@ -62,3 +62,48 @@ func TestResolveAuditFile(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveTargetHost(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "environments.yaml")
+	content := `environments:
+  prod:
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+        ssh_user: root
+        ssh_port: 22
+    services: []
+    dependencies: []
+`
+	if err := os.WriteFile(envFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{envFile: envFile}
+
+	t.Run("empty target host", func(t *testing.T) {
+		host, err := s.resolveTargetHost("prod", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if host != nil {
+			t.Fatal("expected nil host")
+		}
+	})
+
+	t.Run("existing target host", func(t *testing.T) {
+		host, err := s.resolveTargetHost("prod", "app-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if host == nil || host.Host != "10.0.0.5" {
+			t.Fatalf("unexpected host: %+v", host)
+		}
+	})
+
+	t.Run("missing target host", func(t *testing.T) {
+		if _, err := s.resolveTargetHost("prod", "missing"); err == nil {
+			t.Fatal("expected missing target host error")
+		}
+	})
+}

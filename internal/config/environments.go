@@ -64,6 +64,11 @@ func (f EnvironmentFile) Validate() error {
 	return nil
 }
 
+func (f EnvironmentFile) Environment(name string) (Environment, bool) {
+	env, ok := f.Environments[strings.TrimSpace(name)]
+	return env, ok
+}
+
 func (e Environment) Validate(envName string) error {
 	hostNames := map[string]bool{}
 	for _, host := range e.Hosts {
@@ -125,6 +130,15 @@ func (e Environment) Validate(envName string) error {
 	}
 
 	return nil
+}
+
+func (e Environment) HostByName(name string) (Host, bool) {
+	for _, host := range e.Hosts {
+		if host.Name == strings.TrimSpace(name) {
+			return host, true
+		}
+	}
+	return Host{}, false
 }
 
 func validateDependency(dep string) error {
