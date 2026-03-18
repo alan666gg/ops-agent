@@ -120,6 +120,9 @@ func FormatHealth(resp HealthResponse) string {
 	lines := []string{
 		fmt.Sprintf("[%s] %s", strings.ToUpper(resp.Status), resp.Summary),
 	}
+	if strings.TrimSpace(resp.Project) != "" {
+		lines = append(lines, "- project "+resp.Project)
+	}
 	for i, item := range resp.Highlights {
 		if i >= 4 {
 			break
@@ -180,6 +183,9 @@ func FormatIncidentSummary(summary IncidentSummary) string {
 		fmt.Sprintf("- total events: %d", summary.Total),
 		fmt.Sprintf("- by status: %s", formatStatusMap(summary.ByStatus)),
 	}
+	if len(summary.Projects) > 0 {
+		lines = append(lines, "- projects: "+strings.Join(summary.Projects, ","))
+	}
 	for i, target := range summary.TopTargets {
 		if i >= 5 {
 			break
@@ -227,6 +233,7 @@ func FormatActionDetail(item approval.Request) string {
 		fmt.Sprintf("request %s", item.ID),
 		fmt.Sprintf("- status=%s", item.Status),
 		fmt.Sprintf("- action=%s", item.Action),
+		fmt.Sprintf("- project=%s", defaultString(item.Project, "default")),
 		fmt.Sprintf("- env=%s", defaultString(item.Env, "test")),
 	}
 	if item.TargetHost != "" {
@@ -248,7 +255,7 @@ func FormatActionDetail(item approval.Request) string {
 }
 
 func FormatPendingItem(item approval.Request) string {
-	line := fmt.Sprintf("%s %s env=%s", item.ID, item.Action, defaultString(item.Env, "test"))
+	line := fmt.Sprintf("%s %s project=%s env=%s", item.ID, item.Action, defaultString(item.Project, "default"), defaultString(item.Env, "test"))
 	if item.TargetHost != "" {
 		line += " target=" + item.TargetHost
 	}

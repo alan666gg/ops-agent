@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +17,7 @@ type EnvironmentFile struct {
 }
 
 type Environment struct {
+	Project      string    `yaml:"project,omitempty"`
 	Hosts        []Host    `yaml:"hosts"`
 	Services     []Service `yaml:"services"`
 	Dependencies []string  `yaml:"dependencies"`
@@ -113,6 +113,11 @@ func (f EnvironmentFile) Validate() error {
 		if strings.TrimSpace(envName) == "" {
 			return fmt.Errorf("environment name must not be empty")
 		}
+		if project := strings.TrimSpace(env.Project); project != "" {
+			if err := validateScopedName("project", project); err != nil {
+				return fmt.Errorf("environment %q has invalid project %q: %w", envName, project, err)
+			}
+		}
 		if err := env.Validate(envName); err != nil {
 			return err
 		}
@@ -123,6 +128,13 @@ func (f EnvironmentFile) Validate() error {
 func (f EnvironmentFile) Environment(name string) (Environment, bool) {
 	env, ok := f.Environments[strings.TrimSpace(name)]
 	return env, ok
+}
+
+func (f EnvironmentFile) ProjectForEnv(name string) string {
+	if env, ok := f.Environment(name); ok {
+		return env.ProjectName()
+	}
+	return "default"
 }
 
 func (e Environment) Validate(envName string) error {
@@ -228,6 +240,14 @@ func (e Environment) Validate(envName string) error {
 	}
 
 	return nil
+}
+
+func (e Environment) ProjectName() string {
+	project := strings.TrimSpace(e.Project)
+	if project == "" {
+		return "default"
+	}
+	return project
 }
 
 func (e Environment) HostByName(name string) (Host, bool) {
@@ -423,34 +443,81 @@ func validatePercentThresholds(envName, hostName, label string, warn, fail float
 	return nil
 }
 
-func validateDependency(dep string) error {
-	switch {
-	case strings.HasPrefix(dep, "tcp://"):
-		parsed, err := url.Parse(dep)
-		if err != nil {
-			return err
-		}
-		if parsed.Host == "" {
-			return fmt.Errorf("missing host")
-		}
-		host, port, err := net.SplitHostPort(parsed.Host)
-		if err != nil {
-			return fmt.Errorf("expected host:port")
-		}
-		if strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
-			return fmt.Errorf("expected host:port")
-		}
-		return nil
-	case strings.HasPrefix(dep, "http://"), strings.HasPrefix(dep, "https://"):
-		parsed, err := url.Parse(dep)
-		if err != nil {
-			return err
-		}
-		if parsed.Host == "" {
-			return fmt.Errorf("missing host")
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported dependency scheme")
+func validateScopedName(label, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s must not be empty", label)
 	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return fmt.Errorf("only letters, numbers, '.', '-', and '_' are allowed")
+		}
+	}
+	return nil
+}
+
+func ParseDependency(dep string) (scheme, host, port string, err error) {
+	raw := strings.TrimSpace(dep)
+	switch {
+	case strings.HasPrefix(raw, "tcp://"),
+		strings.HasPrefix(raw, "redis://"),
+		strings.HasPrefix(raw, "mysql://"):
+		parsed, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			return "", "", "", parseErr
+		}
+		host = strings.TrimSpace(parsed.Hostname())
+		port = strings.TrimSpace(parsed.Port())
+		if host == "" {
+			return "", "", "", fmt.Errorf("missing host")
+		}
+		scheme = strings.ToLower(strings.TrimSpace(parsed.Scheme))
+		switch scheme {
+		case "tcp":
+			if port == "" {
+				return "", "", "", fmt.Errorf("expected host:port")
+			}
+		case "redis":
+			if port == "" {
+				port = "6379"
+			}
+		case "mysql":
+			if port == "" {
+				port = "3306"
+			}
+		default:
+			return "", "", "", fmt.Errorf("unsupported dependency scheme")
+		}
+		return scheme, host, port, nil
+	case strings.HasPrefix(raw, "http://"), strings.HasPrefix(raw, "https://"):
+		parsed, parseErr := url.Parse(raw)
+		if parseErr != nil {
+			return "", "", "", parseErr
+		}
+		if parsed.Host == "" {
+			return "", "", "", fmt.Errorf("missing host")
+		}
+		return strings.ToLower(strings.TrimSpace(parsed.Scheme)), strings.TrimSpace(parsed.Hostname()), strings.TrimSpace(parsed.Port()), nil
+	default:
+		return "", "", "", fmt.Errorf("unsupported dependency scheme")
+	}
+}
+
+func validateDependency(dep string) error {
+	_, host, port, err := ParseDependency(dep)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("missing host")
+	}
+	if strings.HasPrefix(dep, "tcp://") && strings.TrimSpace(port) == "" {
+		return fmt.Errorf("expected host:port")
+	}
+	return nil
 }

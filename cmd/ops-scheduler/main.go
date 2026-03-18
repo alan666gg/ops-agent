@@ -23,6 +23,7 @@ func main() {
 	envName := flag.String("env", "test", "environment name")
 	interval := flag.Duration("interval", 5*time.Minute, "check interval")
 	auditFile := flag.String("audit", "audit/scheduler.jsonl", "audit jsonl output")
+	auditDriver := flag.String("audit-driver", "jsonl", "audit store driver: jsonl|sqlite")
 	policyFile := flag.String("policy", "configs/policies.yaml", "policy file")
 	notifyWebhook := flag.String("notify-webhook", "", "generic webhook URL for health incident notifications")
 	slackWebhook := flag.String("notify-slack-webhook", "", "Slack incoming webhook URL for health incident notifications")
@@ -68,6 +69,11 @@ func main() {
 		os.Exit(1)
 	}
 	_ = os.MkdirAll("audit", 0o755)
+	auditStore, err := audit.Open(*auditDriver, *auditFile)
+	if err != nil {
+		fmt.Println("open audit store error:", err)
+		os.Exit(1)
+	}
 	notifier := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
 	var resolver notify.DeliveryResolver
 	if strings.TrimSpace(*notifyConfigFile) != "" {
@@ -96,10 +102,11 @@ func main() {
 		cfg, err := config.LoadEnvironments(*envFile)
 		if err != nil {
 			fmt.Printf("load env config error: %v\n", err)
-			_ = audit.AppendJSONL(*auditFile, audit.Event{
+			_ = auditStore.Append(audit.Event{
 				Time:    time.Now().UTC(),
 				Actor:   "ops-scheduler",
 				Action:  "config_reload",
+				Project: cfg.ProjectForEnv(*envName),
 				Env:     *envName,
 				Status:  "failed",
 				Message: err.Error(),
@@ -110,16 +117,18 @@ func main() {
 		if !ok {
 			msg := fmt.Sprintf("env %q not found in %s", *envName, *envFile)
 			fmt.Println(msg)
-			_ = audit.AppendJSONL(*auditFile, audit.Event{
+			_ = auditStore.Append(audit.Event{
 				Time:    time.Now().UTC(),
 				Actor:   "ops-scheduler",
 				Action:  "config_reload",
+				Project: cfg.ProjectForEnv(*envName),
 				Env:     *envName,
 				Status:  "failed",
 				Message: msg,
 			})
 			return
 		}
+		project := env.ProjectName()
 		runTimeout := 20 * time.Second
 		if *discoverInterval > 0 && len(env.Hosts) > 0 {
 			runTimeout += time.Duration(len(env.Hosts)) * *discoverTimeout
@@ -128,7 +137,7 @@ func main() {
 		defer cancel()
 
 		if shouldRunDiscovery(lastDiscovery, *discoverInterval) {
-			discoveredEnv, summary := runDiscoveryCycle(ctx, *auditFile, *envName, env, discovery.ApplyOptions{
+			discoveredEnv, summary := runDiscoveryCycle(ctx, auditStore, *envName, env, discovery.ApplyOptions{
 				HealthPaths:  splitCSV(*discoverHealthPaths),
 				ProbeTimeout: *discoverProbeTimeout,
 			}, *discoverTimeout)
@@ -138,6 +147,7 @@ func main() {
 					Time:    time.Now().UTC(),
 					Actor:   "ops-scheduler",
 					Action:  "discovery_cycle",
+					Project: project,
 					Env:     *envName,
 					Status:  "ok",
 					Message: fmt.Sprintf("attempted=%d failed=%d added=%d updated=%d skipped=%d", summary.Attempted, summary.Failed, summary.Added, summary.Updated, summary.Skipped),
@@ -145,26 +155,29 @@ func main() {
 				if summary.Failed > 0 {
 					evt.Status = "warn"
 				}
-				_ = audit.AppendJSONL(*auditFile, evt)
+				_ = auditStore.Append(evt)
 			}
 			if summary.Changed {
 				cfg.Environments[*envName] = discoveredEnv
 				if err := config.SaveEnvironments(*envFile, cfg); err != nil {
 					fmt.Printf("save env config error: %v\n", err)
-					_ = audit.AppendJSONL(*auditFile, audit.Event{
+					_ = auditStore.Append(audit.Event{
 						Time:    time.Now().UTC(),
 						Actor:   "ops-scheduler",
 						Action:  "discovery_apply",
+						Project: project,
 						Env:     *envName,
 						Status:  "failed",
 						Message: err.Error(),
 					})
 				} else {
 					env = discoveredEnv
-					_ = audit.AppendJSONL(*auditFile, audit.Event{
+					project = env.ProjectName()
+					_ = auditStore.Append(audit.Event{
 						Time:    time.Now().UTC(),
 						Actor:   "ops-scheduler",
 						Action:  "discovery_apply",
+						Project: project,
 						Env:     *envName,
 						Status:  "ok",
 						Message: fmt.Sprintf("applied added=%d updated=%d skipped=%d", summary.Added, summary.Updated, summary.Skipped),
@@ -176,24 +189,26 @@ func main() {
 		results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
 		for _, r := range results {
 			fmt.Printf("[%s] %s %s\n", r.Name, r.Severity, r.Message)
-			_ = audit.AppendJSONL(*auditFile, audit.Event{
+			_ = auditStore.Append(audit.Event{
 				Time:    time.Now().UTC(),
 				Actor:   "ops-scheduler",
 				Action:  "health_cycle",
+				Project: project,
 				Env:     *envName,
 				Target:  *envName + "/" + r.Name,
 				Status:  schedulerResultStatus(r),
 				Message: r.Code + ": " + r.Message,
 			})
 		}
-		if sloResults, err := (slo.Evaluator{}).EvaluateAvailability(*auditFile, *envName, env); err == nil {
+		if sloResults, err := (slo.Evaluator{}).EvaluateAvailabilityStore(auditStore, project, *envName, env); err == nil {
 			results = append(results, sloResults...)
 			for _, r := range sloResults {
 				fmt.Printf("[%s] %s %s\n", r.Name, r.Severity, r.Message)
-				_ = audit.AppendJSONL(*auditFile, audit.Event{
+				_ = auditStore.Append(audit.Event{
 					Time:    time.Now().UTC(),
 					Actor:   "ops-scheduler",
 					Action:  "slo_eval",
+					Project: project,
 					Env:     *envName,
 					Target:  *envName + "/" + r.Name,
 					Status:  schedulerResultStatus(r),
@@ -201,34 +216,37 @@ func main() {
 				})
 			}
 		} else {
-			_ = audit.AppendJSONL(*auditFile, audit.Event{
+			_ = auditStore.Append(audit.Event{
 				Time:    time.Now().UTC(),
 				Actor:   "ops-scheduler",
 				Action:  "slo_eval",
+				Project: project,
 				Env:     *envName,
 				Status:  "failed",
 				Message: err.Error(),
 			})
 		}
 		policyCfg, _ := policy.Load(*policyFile)
-		recentAutoActions, _ := audit.CountRecentAutoActions(*auditFile, *envName, time.Now().UTC().Add(-time.Hour))
+		recentAutoActions, _ := auditStore.CountRecentAutoActions(project, *envName, time.Now().UTC().Add(-time.Hour))
 		report := incident.BuildReport("ops-scheduler", *envName, env, results, policyCfg, recentAutoActions)
 		if notifyCtl.Enabled() {
 			decision, err := notifyCtl.Process(ctx, report)
 			if err != nil {
-				_ = audit.AppendJSONL(*auditFile, audit.Event{
+				_ = auditStore.Append(audit.Event{
 					Time:    time.Now().UTC(),
 					Actor:   "ops-scheduler",
 					Action:  "notify",
+					Project: project,
 					Env:     *envName,
 					Status:  "failed",
 					Message: err.Error(),
 				})
 			} else if decision.Send {
-				_ = audit.AppendJSONL(*auditFile, audit.Event{
+				_ = auditStore.Append(audit.Event{
 					Time:    time.Now().UTC(),
 					Actor:   "ops-scheduler",
 					Action:  "notify",
+					Project: project,
 					Env:     *envName,
 					Status:  "ok",
 					Message: notify.DescribeDecision(decision),
@@ -257,18 +275,20 @@ type discoverySummary struct {
 	Changed   bool
 }
 
-func runDiscoveryCycle(ctx context.Context, auditFile, envName string, env config.Environment, opts discovery.ApplyOptions, timeout time.Duration) (config.Environment, discoverySummary) {
+func runDiscoveryCycle(ctx context.Context, auditStore audit.Store, envName string, env config.Environment, opts discovery.ApplyOptions, timeout time.Duration) (config.Environment, discoverySummary) {
 	updatedEnv := env
 	var summary discoverySummary
+	project := env.ProjectName()
 	for _, host := range env.Hosts {
 		summary.Attempted++
 		report, err := discovery.Discover(ctx, host, timeout, nil)
 		if err != nil {
 			summary.Failed++
-			_ = audit.AppendJSONL(auditFile, audit.Event{
+			_ = auditStore.Append(audit.Event{
 				Time:       time.Now().UTC(),
 				Actor:      "ops-scheduler",
 				Action:     "discover_host",
+				Project:    project,
 				Env:        envName,
 				TargetHost: host.Name,
 				Status:     "failed",
@@ -283,10 +303,11 @@ func runDiscoveryCycle(ctx context.Context, auditFile, envName string, env confi
 		if len(result.Added) > 0 || len(result.Updated) > 0 {
 			summary.Changed = true
 		}
-		_ = audit.AppendJSONL(auditFile, audit.Event{
+		_ = auditStore.Append(audit.Event{
 			Time:       time.Now().UTC(),
 			Actor:      "ops-scheduler",
 			Action:     "discover_host",
+			Project:    project,
 			Env:        envName,
 			TargetHost: host.Name,
 			Status:     "ok",

@@ -32,6 +32,7 @@ type Agent struct {
 	OpenAI         OpenAIClient
 	OpsAPI         OpsAPIClient
 	Authorizer     Authorizer
+	ProjectForEnv  func(string) (string, error)
 	State          ConversationStateStore
 	Confirmations  ConfirmationStore
 	AuditFile      string
@@ -264,6 +265,7 @@ func (a Agent) toolSchemas() []responseTool {
 				"type": "object",
 				"properties": map[string]any{
 					"minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 1440},
+					"project": map[string]any{"type": "string", "description": "Optional project scope such as default, payments, or infra."},
 				},
 				"required":             []string{"minutes"},
 				"additionalProperties": false,
@@ -277,7 +279,8 @@ func (a Agent) toolSchemas() []responseTool {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+					"limit":   map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+					"project": map[string]any{"type": "string", "description": "Optional project scope."},
 				},
 				"required":             []string{"limit"},
 				"additionalProperties": false,
@@ -291,8 +294,9 @@ func (a Agent) toolSchemas() []responseTool {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"status": map[string]any{"type": "string"},
-					"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+					"status":  map[string]any{"type": "string"},
+					"limit":   map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+					"project": map[string]any{"type": "string", "description": "Optional project scope."},
 				},
 				"required":             []string{"status", "limit"},
 				"additionalProperties": false,
@@ -416,23 +420,50 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 	switch name {
 	case "get_health":
 		env, _ := args["env"].(string)
+		project, err := a.authorizeEnv(actor, env)
+		if err != nil {
+			return nil, env, "", err
+		}
 		data, err := a.OpsAPI.Health(ctx, env)
+		if data.Project == "" {
+			data.Project = project
+		}
 		return data, env, "", err
 	case "get_incident_summary":
-		data, err := a.OpsAPI.IncidentSummary(ctx, intFromAny(args["minutes"], 60))
+		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		data, err := a.OpsAPI.IncidentSummaryByProject(ctx, intFromAny(args["minutes"], 60), projects)
 		return data, "", "", err
 	case "list_pending":
-		data, err := a.OpsAPI.Pending(ctx, intFromAny(args["limit"], 10))
+		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		data, err := a.OpsAPI.PendingByProject(ctx, intFromAny(args["limit"], 10), projects)
 		return data, "", "", err
 	case "list_actions":
-		data, err := a.OpsAPI.ListActions(ctx, stringFromAny(args["status"]), intFromAny(args["limit"], 10), "")
+		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		data, err := a.OpsAPI.ListActionsByProject(ctx, stringFromAny(args["status"]), intFromAny(args["limit"], 10), "", projects)
 		return data, "", "", err
 	case "get_action":
 		data, err := a.OpsAPI.GetAction(ctx, stringFromAny(args["request_id"]))
+		if err == nil {
+			if authErr := a.Authorizer.AuthorizeProject(actor, data.Project); authErr != nil {
+				return nil, data.Env, data.TargetHost, authErr
+			}
+		}
 		return data, data.Env, data.TargetHost, err
 	case "request_action":
 		env := stringFromAny(args["env"])
 		targetHost := stringFromAny(args["target_host"])
+		if _, err := a.authorizeEnv(actor, env); err != nil {
+			return nil, env, targetHost, err
+		}
 		data, err := a.OpsAPI.RequestAction(ctx, RequestActionRequest{
 			Env:        env,
 			Action:     stringFromAny(args["action"]),
@@ -442,19 +473,33 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 		})
 		return data, env, targetHost, err
 	case "approve_action":
+		item, err := a.OpsAPI.GetAction(ctx, stringFromAny(args["request_id"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		if err := a.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return nil, item.Env, item.TargetHost, err
+		}
 		timeout := intFromAny(args["timeout_seconds"], a.ApproveTimeout)
 		if timeout <= 0 {
 			timeout = 30
 		}
-		data, err := a.OpsAPI.Approve(ctx, stringFromAny(args["request_id"]), actor, timeout)
-		return data, "", "", err
+		data, err := a.OpsAPI.Approve(ctx, item.ID, actor, timeout)
+		return data, item.Env, item.TargetHost, err
 	case "reject_action":
+		item, err := a.OpsAPI.GetAction(ctx, stringFromAny(args["request_id"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		if err := a.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return nil, item.Env, item.TargetHost, err
+		}
 		reason := stringFromAny(args["reason"])
 		if strings.TrimSpace(reason) == "" {
 			reason = "rejected from llm agent"
 		}
-		data, err := a.OpsAPI.Reject(ctx, stringFromAny(args["request_id"]), actor, reason)
-		return data, "", "", err
+		data, err := a.OpsAPI.Reject(ctx, item.ID, actor, reason)
+		return data, item.Env, item.TargetHost, err
 	default:
 		return nil, "", "", fmt.Errorf("unsupported tool %q", name)
 	}
@@ -469,6 +514,7 @@ func (a Agent) prompt() string {
 	b.WriteString("Respond in the user's language, defaulting to Chinese.\n")
 	b.WriteString("Use tools whenever the user asks about health, incidents, pending approvals, or actions.\n")
 	b.WriteString("Never invent request IDs, environments, host names, or action names.\n")
+	b.WriteString("Respect project isolation. If a project is ambiguous, ask one short follow-up question instead of guessing.\n")
 	b.WriteString("Before approving or rejecting an ambiguous request, prefer listing or fetching request details first.\n")
 	b.WriteString("Only approve_action or reject_action when the user explicitly asks to approve or reject.\n")
 	b.WriteString("When the user asks to run an operation, prefer request_action so policy and approval stay enforced.\n")
@@ -478,6 +524,46 @@ func (a Agent) prompt() string {
 	b.WriteString("Available actions: ")
 	b.WriteString(strings.Join(actions.Names(), ", "))
 	return b.String()
+}
+
+func (a Agent) authorizeEnv(actor, env string) (string, error) {
+	project, err := a.projectForEnv(env)
+	if err != nil {
+		return "", err
+	}
+	if err := a.Authorizer.AuthorizeProject(actor, project); err != nil {
+		return "", err
+	}
+	return project, nil
+}
+
+func (a Agent) projectForEnv(env string) (string, error) {
+	env = strings.TrimSpace(env)
+	if env == "" {
+		return "default", nil
+	}
+	if a.ProjectForEnv == nil {
+		return "default", nil
+	}
+	project, err := a.ProjectForEnv(env)
+	if err != nil {
+		return "", err
+	}
+	project = strings.TrimSpace(project)
+	if project == "" {
+		project = "default"
+	}
+	return project, nil
+}
+
+func (a Agent) scopeProjects(actor, requested string) ([]string, error) {
+	if strings.TrimSpace(requested) != "" {
+		if err := a.Authorizer.AuthorizeProject(actor, requested); err != nil {
+			return nil, err
+		}
+		return []string{strings.TrimSpace(requested)}, nil
+	}
+	return a.Authorizer.AllowedProjects(actor)
 }
 
 func (a Agent) modelOrDefault() string {

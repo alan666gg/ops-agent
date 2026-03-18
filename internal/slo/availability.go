@@ -1,10 +1,7 @@
 package slo
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -36,6 +33,14 @@ type serviceRef struct {
 }
 
 func (e Evaluator) EvaluateAvailability(path, envName string, env config.Environment) ([]checks.Result, error) {
+	store, err := audit.Open("jsonl", path)
+	if err != nil {
+		return nil, err
+	}
+	return e.EvaluateAvailabilityStore(store, "", envName, env)
+}
+
+func (e Evaluator) EvaluateAvailabilityStore(store audit.Store, project, envName string, env config.Environment) ([]checks.Result, error) {
 	var services []serviceRef
 	var earliest time.Time
 	now := time.Now().UTC()
@@ -69,7 +74,7 @@ func (e Evaluator) EvaluateAvailability(path, envName string, env config.Environ
 	for _, ref := range services {
 		stats[ref.target] = &serviceStats{}
 	}
-	if err := scanAvailability(path, envName, earliest, now, targets, stats); err != nil {
+	if err := scanAvailability(store, project, envName, earliest, now, targets, stats); err != nil {
 		return nil, err
 	}
 
@@ -83,31 +88,18 @@ func (e Evaluator) EvaluateAvailability(path, envName string, env config.Environ
 	return out, nil
 }
 
-func scanAvailability(path, envName string, earliest, now time.Time, targets map[string]serviceRef, stats map[string]*serviceStats) error {
-	f, err := os.Open(path)
+func scanAvailability(store audit.Store, project, envName string, earliest, now time.Time, targets map[string]serviceRef, stats map[string]*serviceStats) error {
+	events, err := store.List(audit.Query{
+		Since:    earliest,
+		Projects: projectFilter(project),
+		Env:      envName,
+		Actions:  []string{"health_run", "health_cycle"},
+		Limit:    0,
+	})
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		var evt audit.Event
-		if err := json.Unmarshal(sc.Bytes(), &evt); err != nil {
-			continue
-		}
-		if evt.Time.Before(earliest) {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(evt.Env), strings.TrimSpace(envName)) {
-			continue
-		}
-		if evt.Action != "health_run" && evt.Action != "health_cycle" {
-			continue
-		}
+	for _, evt := range events {
 		targetName := strings.TrimPrefix(strings.TrimSpace(evt.Target), strings.TrimSpace(envName)+"/")
 		ref, ok := targets[targetName]
 		if !ok {
@@ -128,7 +120,7 @@ func scanAvailability(path, envName string, earliest, now time.Time, targets map
 			recordSample(&serviceStats.TicketShort, isError)
 		}
 	}
-	return sc.Err()
+	return nil
 }
 
 func evaluateService(ref serviceRef, stats *serviceStats) (checks.Result, bool) {
@@ -240,4 +232,11 @@ func sanitizeName(s string) string {
 		}
 	}
 	return strings.Trim(b.String(), "_")
+}
+
+func projectFilter(project string) []string {
+	if strings.TrimSpace(project) == "" {
+		return nil
+	}
+	return []string{strings.TrimSpace(project)}
 }

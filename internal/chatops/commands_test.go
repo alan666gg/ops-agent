@@ -83,7 +83,21 @@ func TestFormatPending(t *testing.T) {
 			{ID: "r1", Action: "restart_container", Env: "prod", Args: []string{"api-1"}, Actor: "tg:@ops"},
 		},
 	})
-	if !strings.Contains(text, "r1 restart_container env=prod") {
+	for _, want := range []string{"r1 restart_container", "project=default", "env=prod"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("unexpected pending text: %s", text)
+		}
+	}
+}
+
+func TestFormatIncidentSummaryIncludesProjects(t *testing.T) {
+	text := FormatIncidentSummary(IncidentSummary{
+		WindowMinutes: 60,
+		Projects:      []string{"payments"},
+		Total:         3,
+		ByStatus:      map[string]int{"fail": 2, "warn": 1},
+	})
+	if !strings.Contains(text, "projects: payments") {
 		t.Fatalf("unexpected pending text: %s", text)
 	}
 }

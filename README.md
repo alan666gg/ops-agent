@@ -52,6 +52,8 @@ Scheduler (periodic health checks):
 go run ./cmd/ops-scheduler --env test --env-file configs/environments.yaml --audit audit/scheduler.jsonl --once
 # optional low-frequency inventory refresh alongside high-frequency health checks
 go run ./cmd/ops-scheduler --env prod --env-file configs/environments.yaml --audit audit/scheduler.jsonl --discover-interval 6h --discover-timeout 20s
+# recommended for larger installs: move audit history to sqlite
+go run ./cmd/ops-scheduler --env prod --env-file configs/environments.yaml --audit audit/scheduler.db --audit-driver sqlite --discover-interval 6h
 ```
 
 The scheduler/API health pass now includes:
@@ -64,6 +66,8 @@ The scheduler/API health pass now includes:
 - container runtime checks for restart count and recent restart flapping
 - systemd recent error-log summaries from `journalctl`
 - HTTP/TCP dependency checks from `dependencies[]`
+- Redis protocol checks from `redis://host:port/db`
+- MySQL handshake checks from `mysql://host:port/db`
 - optional history-backed SLO burn-rate checks from `services[].slo`
 
 Host-level SSH resource checks are configured under `hosts[].checks` in [configs/environments.yaml](/Users/zhangza/code/agent/ops-agent/configs/environments.yaml). If you omit them, the control plane uses sensible defaults:
@@ -110,6 +114,8 @@ API (minimal control plane):
 ```bash
 export OPS_API_TOKEN=change-me
 go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2
+# recommended for larger history windows and incident summaries
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --pending-driver sqlite --pending-file audit/pending-actions.db
 ```
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
@@ -179,6 +185,7 @@ REQ_ID=$(curl -s -X POST http://127.0.0.1:8090/actions/request \
 
 # list pending and approve
 curl -s "http://127.0.0.1:8090/actions/pending" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s "http://127.0.0.1:8090/actions/pending?project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/actions/list?status=executed&limit=20" -H "Authorization: Bearer $OPS_API_TOKEN"
 # cursor pagination: use next_cursor from previous response
 curl -s "http://127.0.0.1:8090/actions/list?status=pending&limit=20&cursor=<next_cursor>" -H "Authorization: Bearer $OPS_API_TOKEN"
@@ -188,7 +195,7 @@ curl -s -X POST http://127.0.0.1:8090/actions/approve \
   -d "{\"request_id\":\"$REQ_ID\",\"approver\":\"ops-admin\"}"
 
 curl -s "http://127.0.0.1:8090/audit/tail?file=api.jsonl&limit=20" -H "Authorization: Bearer $OPS_API_TOKEN"
-curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60&project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/metrics"
 ```
 
@@ -199,13 +206,14 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `policies.production.require_human_approval=true` upgrades otherwise-safe actions to approval-required in production.
 - `policies.production.max_auto_actions_per_hour` limits unattended production actions per hour; excess requests are converted to approval-required.
 - `policies.forbidden_commands` now blocks actions whose runbook content contains a forbidden command token.
-- `GET /audit/tail` only reads `.jsonl` files inside the configured audit directory.
+- `GET /audit/tail` only reads files inside the configured audit directory; `jsonl` stores return tail lines and `sqlite` stores return recent structured events.
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
 - `ops-agent discover --apply` only appends or enriches discovered services; it does not delete existing services or rewrite unrelated hosts.
 - `ops-scheduler --discover-interval` runs the same discovery/apply flow on a lower cadence than health checks, so new host services can join the next health cycle without a restart.
 - `host_ssh_*` remains the root-cause gate for host reachability; if SSH is already down, the incident layer suppresses dependent host resource/process checks to avoid duplicate noise.
 - `service_runtime_*` and `service_logs_*` are treated as service-scoped signals, so container flapping and recent systemd error logs show up in the same incident context as the parent service.
 - `/health` and `/health/run` responses now include `highlights`, which bubble the most actionable runtime/log signals to the top for Telegram and LLM consumers.
+- `environments.<env>.project` adds a first-class project boundary; actions, incident summaries, and Telegram access control can now be scoped by project.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 - `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.
@@ -232,6 +240,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `/reset` clears the stored LLM conversation state, and slash commands or approval buttons also reset that state to avoid stale context.
 - LLM tool calls and confirmation decisions are written to the Telegram audit file so model-driven actions can be traced separately from `ops-api`.
 - `configs/chatops.yaml` lets you define Telegram actors with `viewer / operator / approver / admin` roles, optional per-user `allowed_actions`, denylist patterns for prompt-injection-style input, and a max input length.
+- `configs/chatops.yaml` also supports `allowed_projects`, so one shared Telegram bot can safely serve multiple projects without exposing cross-project incidents or approvals.
 - Restrict it with a single `--chat-id` so only one Telegram chat can interact with the control plane.
 - Users do not need their own ChatGPT/OpenAI account authorization; the bot uses one server-side API key.
 

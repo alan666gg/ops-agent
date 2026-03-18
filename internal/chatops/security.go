@@ -23,9 +23,10 @@ type SecurityConfig struct {
 }
 
 type UserRule struct {
-	Actor          string   `yaml:"actor"`
-	Role           string   `yaml:"role"`
-	AllowedActions []string `yaml:"allowed_actions"`
+	Actor           string   `yaml:"actor"`
+	Role            string   `yaml:"role"`
+	AllowedActions  []string `yaml:"allowed_actions"`
+	AllowedProjects []string `yaml:"allowed_projects"`
 }
 
 type Authorizer struct {
@@ -94,6 +95,14 @@ func (c SecurityConfig) Validate() error {
 			if _, ok := actions.Lookup(action); !ok {
 				return fmt.Errorf("chatops actor %q references unsupported action %q", actor, action)
 			}
+		}
+		seenProjects := map[string]struct{}{}
+		for _, project := range user.AllowedProjects {
+			project = normalizeProject(project)
+			if _, ok := seenProjects[project]; ok {
+				return fmt.Errorf("chatops actor %q has duplicate allowed project %q", actor, project)
+			}
+			seenProjects[project] = struct{}{}
 		}
 	}
 	if c.MaxInputChars <= 0 {
@@ -187,6 +196,38 @@ func (a Authorizer) AuthorizeTool(actor, toolName string, args map[string]any) e
 	}
 }
 
+func (a Authorizer) AuthorizeProject(actor, project string) error {
+	user, err := a.user(actor)
+	if err != nil {
+		return err
+	}
+	if len(user.AllowedProjects) == 0 {
+		return nil
+	}
+	project = normalizeProject(project)
+	for _, allowed := range user.AllowedProjects {
+		if normalizeProject(allowed) == project {
+			return nil
+		}
+	}
+	return fmt.Errorf("telegram actor %q is not allowed to access project %q", actor, project)
+}
+
+func (a Authorizer) AllowedProjects(actor string) ([]string, error) {
+	user, err := a.user(actor)
+	if err != nil {
+		return nil, err
+	}
+	if len(user.AllowedProjects) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(user.AllowedProjects))
+	for _, project := range user.AllowedProjects {
+		out = append(out, normalizeProject(project))
+	}
+	return out, nil
+}
+
 func (a Authorizer) user(actor string) (UserRule, error) {
 	actor = strings.TrimSpace(actor)
 	if actor == "" {
@@ -227,6 +268,14 @@ func (a Authorizer) allowAction(actor, action string) error {
 		}
 	}
 	return fmt.Errorf("telegram actor %q is not allowed to request action %q", actor, action)
+}
+
+func normalizeProject(project string) string {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return "default"
+	}
+	return project
 }
 
 func roleRank(role string) int {

@@ -23,6 +23,7 @@ type OpsAPIClient struct {
 }
 
 type HealthResponse struct {
+	Project          string                     `json:"project,omitempty"`
 	Env              string                     `json:"env"`
 	Status           string                     `json:"status"`
 	Results          []checks.Result            `json:"results"`
@@ -34,6 +35,7 @@ type HealthResponse struct {
 
 type IncidentSummary struct {
 	WindowMinutes int            `json:"window_minutes"`
+	Projects      []string       `json:"projects,omitempty"`
 	Total         int            `json:"total_events"`
 	ByStatus      map[string]int `json:"by_status"`
 	TopTargets    []string       `json:"top_targets"`
@@ -83,9 +85,18 @@ func (c OpsAPIClient) Health(ctx context.Context, env string) (HealthResponse, e
 }
 
 func (c OpsAPIClient) IncidentSummary(ctx context.Context, minutes int) (IncidentSummary, error) {
+	return c.IncidentSummaryByProject(ctx, minutes, nil)
+}
+
+func (c OpsAPIClient) IncidentSummaryByProject(ctx context.Context, minutes int, projects []string) (IncidentSummary, error) {
 	var out IncidentSummary
 	q := url.Values{}
 	q.Set("minutes", fmt.Sprintf("%d", minutes))
+	for _, project := range projects {
+		if strings.TrimSpace(project) != "" {
+			q.Add("project", strings.TrimSpace(project))
+		}
+	}
 	if err := c.doJSON(ctx, http.MethodGet, "/incidents/summary?"+q.Encode(), nil, &out); err != nil {
 		return out, err
 	}
@@ -93,9 +104,18 @@ func (c OpsAPIClient) IncidentSummary(ctx context.Context, minutes int) (Inciden
 }
 
 func (c OpsAPIClient) Pending(ctx context.Context, limit int) (PendingResponse, error) {
+	return c.PendingByProject(ctx, limit, nil)
+}
+
+func (c OpsAPIClient) PendingByProject(ctx context.Context, limit int, projects []string) (PendingResponse, error) {
 	var out PendingResponse
 	q := url.Values{}
 	q.Set("limit", fmt.Sprintf("%d", limit))
+	for _, project := range projects {
+		if strings.TrimSpace(project) != "" {
+			q.Add("project", strings.TrimSpace(project))
+		}
+	}
 	if err := c.doJSON(ctx, http.MethodGet, "/actions/pending?"+q.Encode(), nil, &out); err != nil {
 		return out, err
 	}
@@ -113,12 +133,21 @@ func (c OpsAPIClient) GetAction(ctx context.Context, id string) (approval.Reques
 }
 
 func (c OpsAPIClient) ListActions(ctx context.Context, status string, limit int, cursor string) (ActionListResponse, error) {
+	return c.ListActionsByProject(ctx, status, limit, cursor, nil)
+}
+
+func (c OpsAPIClient) ListActionsByProject(ctx context.Context, status string, limit int, cursor string, projects []string) (ActionListResponse, error) {
 	var out ActionListResponse
 	q := url.Values{}
 	q.Set("status", strings.TrimSpace(status))
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	if strings.TrimSpace(cursor) != "" {
 		q.Set("cursor", strings.TrimSpace(cursor))
+	}
+	for _, project := range projects {
+		if strings.TrimSpace(project) != "" {
+			q.Add("project", strings.TrimSpace(project))
+		}
 	}
 	if err := c.doJSON(ctx, http.MethodGet, "/actions/list?"+q.Encode(), nil, &out); err != nil {
 		return out, err

@@ -1,5 +1,6 @@
 environments:
   test:
+    project: demo
     hosts:
       - name: test-app-1
         host: 127.0.0.1
@@ -35,10 +36,11 @@ environments:
           ticket_burn_rate: 2
           min_samples: 4
     dependencies:
-      - tcp://127.0.0.1:6379
-      - tcp://127.0.0.1:3306
+      - redis://127.0.0.1:6379/0
+      - mysql://127.0.0.1:3306/app
 
   prod:
+    project: core
     hosts: []
     services: []
     dependencies: []

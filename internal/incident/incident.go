@@ -31,6 +31,7 @@ type SuppressedCheck struct {
 
 type Report struct {
 	Source           string            `json:"source"`
+	Project          string            `json:"project,omitempty"`
 	Env              string            `json:"env"`
 	Status           string            `json:"status"`
 	Summary          string            `json:"summary"`
@@ -51,6 +52,7 @@ type Report struct {
 func BuildReport(source, envName string, env config.Environment, results []checks.Result, policyCfg policy.Config, recentAutoActions int) Report {
 	report := Report{
 		Source:      source,
+		Project:     env.ProjectName(),
 		Env:         envName,
 		Status:      "ok",
 		TriggeredAt: time.Now().UTC(),
@@ -177,13 +179,19 @@ func BuildSuggestions(envName string, env config.Environment, results []checks.R
 	}
 	for _, dep := range env.Dependencies {
 		dep = strings.TrimSpace(dep)
-		switch {
-		case strings.HasPrefix(dep, "tcp://"):
-			key := "dependency_tcp_" + sanitizeName(strings.TrimPrefix(dep, "tcp://"))
-			depByKey[key] = dep
-		case strings.HasPrefix(dep, "http://"), strings.HasPrefix(dep, "https://"):
-			key := "dependency_http_" + sanitizeName(depLabel(dep))
-			depByKey[key] = dep
+		scheme, host, port, err := config.ParseDependency(dep)
+		if err != nil {
+			continue
+		}
+		switch scheme {
+		case "tcp":
+			depByKey["dependency_tcp_"+sanitizeName(net.JoinHostPort(host, port))] = dep
+		case "http", "https":
+			depByKey["dependency_http_"+sanitizeName(depLabel(dep))] = dep
+		case "redis":
+			depByKey["dependency_redis_"+sanitizeName(net.JoinHostPort(host, port))] = dep
+		case "mysql":
+			depByKey["dependency_mysql_"+sanitizeName(net.JoinHostPort(host, port))] = dep
 		}
 	}
 
@@ -211,6 +219,7 @@ func BuildSuggestions(envName string, env config.Environment, results []checks.R
 			continue
 		}
 		if svc, ok := serviceByKey[res.Name]; ok {
+			host, hasHost := serviceHost(env, svc)
 			if strings.TrimSpace(svc.HealthcheckURL) != "" {
 				add(Suggestion{
 					Action: "check_service_health",
@@ -218,11 +227,35 @@ func BuildSuggestions(envName string, env config.Environment, results []checks.R
 					Reason: fmt.Sprintf("%s: %s", res.Name, res.Message),
 				})
 			}
-			if res.Severity == checks.SeverityFail && strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) != "" {
+			if hasHost && strings.EqualFold(strings.TrimSpace(svc.Type), "container") {
+				switch res.Code {
+				case "CONTAINER_OOMKILLED", "CONTAINER_FLAPPING":
+					add(Suggestion{
+						Action:     "check_host_health",
+						TargetHost: host.Name,
+						Reason:     fmt.Sprintf("%s on %s needs host-level inspection before restart (%s)", svc.Name, host.Name, res.Code),
+					})
+					continue
+				}
+			}
+			if hasHost && strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") && strings.HasPrefix(res.Name, "service_logs_") {
 				add(Suggestion{
-					Action: "restart_container",
-					Args:   []string{svc.ContainerName},
-					Reason: fmt.Sprintf("%s is container-backed and failing", svc.Name),
+					Action:     "check_host_health",
+					TargetHost: host.Name,
+					Reason:     fmt.Sprintf("%s reported recent systemd errors on %s", svc.Name, host.Name),
+				})
+				continue
+			}
+			if res.Severity == checks.SeverityFail && strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) != "" {
+				targetHost := ""
+				if hasHost {
+					targetHost = host.Name
+				}
+				add(Suggestion{
+					Action:     "restart_container",
+					TargetHost: targetHost,
+					Args:       []string{svc.ContainerName},
+					Reason:     fmt.Sprintf("%s is container-backed and failing", svc.Name),
 				})
 			}
 			continue
@@ -376,23 +409,30 @@ func dependencyHosts(env config.Environment) map[string]string {
 	out := map[string]string{}
 	for _, dep := range env.Dependencies {
 		dep = strings.TrimSpace(dep)
-		switch {
-		case strings.HasPrefix(dep, "tcp://"):
-			target := strings.TrimPrefix(dep, "tcp://")
-			host, _, err := net.SplitHostPort(target)
-			if err != nil {
-				continue
-			}
+		scheme, host, port, err := config.ParseDependency(dep)
+		if err != nil {
+			continue
+		}
+		switch scheme {
+		case "tcp":
 			if envHost, ok := env.HostByEndpoint(host); ok {
-				out["dependency_tcp_"+sanitizeName(target)] = envHost.Name
+				out["dependency_tcp_"+sanitizeName(net.JoinHostPort(host, port))] = envHost.Name
 			}
-		case strings.HasPrefix(dep, "http://"), strings.HasPrefix(dep, "https://"):
+		case "http", "https":
 			parsed, err := url.Parse(dep)
 			if err != nil || parsed.Hostname() == "" {
 				continue
 			}
 			if envHost, ok := env.HostByEndpoint(parsed.Hostname()); ok {
 				out["dependency_http_"+sanitizeName(depLabel(dep))] = envHost.Name
+			}
+		case "redis":
+			if envHost, ok := env.HostByEndpoint(host); ok {
+				out["dependency_redis_"+sanitizeName(net.JoinHostPort(host, port))] = envHost.Name
+			}
+		case "mysql":
+			if envHost, ok := env.HostByEndpoint(host); ok {
+				out["dependency_mysql_"+sanitizeName(net.JoinHostPort(host, port))] = envHost.Name
 			}
 		}
 	}

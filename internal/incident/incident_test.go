@@ -117,7 +117,7 @@ func TestBuildSuggestionsForContainerRuntimeFailure(t *testing.T) {
 		{Name: "service_runtime_api", Code: "CONTAINER_FLAPPING", Severity: checks.SeverityFail, Message: "restart_count=6 exceeds fail threshold=5"},
 	}
 	policyCfg := policy.Config{}
-	policyCfg.Policies.AutoActions.Allowed = []string{"check_service_health"}
+	policyCfg.Policies.AutoActions.Allowed = []string{"check_service_health", "check_host_health"}
 	policyCfg.Policies.AutoActions.RequireApproval = []string{"restart_container"}
 
 	report := BuildReport("ops-scheduler", "prod", env, results, policyCfg, 0)
@@ -126,12 +126,46 @@ func TestBuildSuggestionsForContainerRuntimeFailure(t *testing.T) {
 	}
 	found := map[string]bool{}
 	for _, item := range report.Suggestions {
-		found[item.Action] = true
+		found[item.Action+"|"+item.TargetHost] = true
 	}
-	if !found["check_service_health"] || !found["restart_container"] {
+	if !found["check_service_health|"] || !found["check_host_health|app-1"] {
 		t.Fatalf("missing expected suggestions: %#v", report.Suggestions)
+	}
+	for _, item := range report.Suggestions {
+		if item.Action == "restart_container" {
+			t.Fatalf("did not expect restart suggestion for flapping container: %#v", report.Suggestions)
+		}
 	}
 	if len(report.Highlights) == 0 || !strings.Contains(report.Highlights[0], "service_runtime_api [CONTAINER_FLAPPING]") {
 		t.Fatalf("unexpected highlights: %#v", report.Highlights)
+	}
+}
+
+func TestBuildSuggestionsForStoppedContainerIncludeTargetHostRestart(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{{Name: "app-1", Host: "10.0.0.5"}},
+		Services: []config.Service{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api-1", HealthcheckURL: "http://10.0.0.5:8080/healthz"},
+		},
+	}
+	results := []checks.Result{
+		{Name: "service_runtime_api", Code: "CONTAINER_NOT_RUNNING", Severity: checks.SeverityFail, Message: "container status=exited"},
+	}
+	policyCfg := policy.Config{}
+	policyCfg.Policies.AutoActions.Allowed = []string{"check_service_health"}
+	policyCfg.Policies.AutoActions.RequireApproval = []string{"restart_container"}
+
+	report := BuildReport("ops-scheduler", "prod", env, results, policyCfg, 0)
+	foundRestart := false
+	for _, item := range report.Suggestions {
+		if item.Action == "restart_container" {
+			foundRestart = true
+			if item.TargetHost != "app-1" {
+				t.Fatalf("expected restart suggestion to include target host, got %#v", item)
+			}
+		}
+	}
+	if !foundRestart {
+		t.Fatalf("expected restart suggestion, got %#v", report.Suggestions)
 	}
 }

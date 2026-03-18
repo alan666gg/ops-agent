@@ -355,3 +355,60 @@ func TestSaveEnvironmentsRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected output: %+v", output)
 	}
 }
+
+func TestLoadEnvironmentsAcceptsProjectAndMiddlewareDependencies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    project: payments
+    hosts: []
+    services: []
+    dependencies:
+      - redis://cache.internal:6379/0
+      - mysql://db.internal:3306/app
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadEnvironments(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.ProjectForEnv("prod"); got != "payments" {
+		t.Fatalf("unexpected project mapping: %q", got)
+	}
+}
+
+func TestLoadEnvironmentsRejectsInvalidProjectName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    project: "bad project"
+    hosts: []
+    services: []
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadEnvironments(path); err == nil {
+		t.Fatal("expected invalid project name error")
+	}
+}
+
+func TestParseDependencyDefaultsPortsForMiddleware(t *testing.T) {
+	scheme, host, port, err := ParseDependency("redis://cache.internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheme != "redis" || host != "cache.internal" || port != "6379" {
+		t.Fatalf("unexpected redis dependency parse: %s %s %s", scheme, host, port)
+	}
+	scheme, host, port, err = ParseDependency("mysql://db.internal/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheme != "mysql" || host != "db.internal" || port != "3306" {
+		t.Fatalf("unexpected mysql dependency parse: %s %s %s", scheme, host, port)
+	}
+}

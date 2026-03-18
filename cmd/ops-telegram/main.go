@@ -12,11 +12,13 @@ import (
 
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/chatops"
+	"github.com/alan666gg/ops-agent/internal/config"
 )
 
 func main() {
 	apiBase := flag.String("api-base", "http://127.0.0.1:8090", "ops-api base url")
 	apiToken := flag.String("api-token", os.Getenv("OPS_API_TOKEN"), "ops-api bearer token")
+	envFile := flag.String("env-file", "configs/environments.yaml", "environment config file used to resolve env -> project authorization")
 	botToken := flag.String("bot-token", os.Getenv("OPS_TG_BOT_TOKEN"), "telegram bot token")
 	chatID := flag.Int64("chat-id", 0, "authorized telegram chat id")
 	offsetFile := flag.String("offset-file", "audit/telegram-offset.txt", "telegram long-poll offset state file")
@@ -55,8 +57,18 @@ func main() {
 			BaseURL: strings.TrimSpace(*openAIBase),
 			Model:   strings.TrimSpace(*openAIModel),
 		},
-		OpsAPI:         apiClient,
-		Authorizer:     authorizer,
+		OpsAPI:     apiClient,
+		Authorizer: authorizer,
+		ProjectForEnv: func(env string) (string, error) {
+			cfg, err := config.LoadEnvironments(strings.TrimSpace(*envFile))
+			if err != nil {
+				return "", err
+			}
+			if _, ok := cfg.Environment(env); !ok {
+				return "", fmt.Errorf("env not found: %s", env)
+			}
+			return cfg.ProjectForEnv(env), nil
+		},
 		State:          chatops.ConversationStateStore{Path: *llmStateFile},
 		Confirmations:  chatops.ConfirmationStore{Path: *llmConfirmFile},
 		AuditFile:      *auditFile,
@@ -179,47 +191,62 @@ func handleCommandUpdate(ctx context.Context, tg chatops.TelegramClient, api cha
 	if cmd.Name == "reset" {
 		return tg.SendMessage(ctx, msg.Chat.ID, "LLM 上下文已重置。", nil)
 	}
-	reply, markup := executeCommand(ctx, api, cmd, actor, approveTimeout)
+	reply, markup := executeCommand(ctx, api, agent, cmd, actor, approveTimeout)
 	if strings.TrimSpace(reply) == "" {
 		return nil
 	}
 	return tg.SendMessage(ctx, msg.Chat.ID, reply, markup)
 }
 
-func handleCommand(ctx context.Context, api chatops.OpsAPIClient, text, actor string, approveTimeout int) (string, any) {
+func handleCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops.Agent, text, actor string, approveTimeout int) (string, any) {
 	cmd, err := chatops.ParseCommand(text)
 	if err != nil {
 		return err.Error() + "\n\n" + chatops.HelpText(), nil
 	}
-	return executeCommand(ctx, api, cmd, actor, approveTimeout)
+	return executeCommand(ctx, api, agent, cmd, actor, approveTimeout)
 }
 
-func executeCommand(ctx context.Context, api chatops.OpsAPIClient, cmd chatops.Command, actor string, approveTimeout int) (string, any) {
+func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops.Agent, cmd chatops.Command, actor string, approveTimeout int) (string, any) {
 	switch cmd.Name {
 	case "start", "help":
 		return chatops.HelpText(), nil
 	case "reset":
 		return "LLM 上下文已重置。", nil
 	case "health":
+		if _, err := authorizeCommandEnv(agent, actor, cmd.Env); err != nil {
+			return "health denied: " + err.Error(), nil
+		}
 		resp, err := api.Health(ctx, cmd.Env)
 		if err != nil {
 			return "health failed: " + err.Error(), nil
 		}
 		return chatops.FormatHealth(resp), nil
 	case "incidents":
-		resp, err := api.IncidentSummary(ctx, cmd.Minutes)
+		projects, err := agent.Authorizer.AllowedProjects(actor)
+		if err != nil {
+			return "incident summary denied: " + err.Error(), nil
+		}
+		resp, err := api.IncidentSummaryByProject(ctx, cmd.Minutes, projects)
 		if err != nil {
 			return "incident summary failed: " + err.Error(), nil
 		}
 		return chatops.FormatIncidentSummary(resp), nil
 	case "pending":
-		resp, err := api.Pending(ctx, 10)
+		projects, err := agent.Authorizer.AllowedProjects(actor)
+		if err != nil {
+			return "pending query denied: " + err.Error(), nil
+		}
+		resp, err := api.PendingByProject(ctx, 10, projects)
 		if err != nil {
 			return "pending query failed: " + err.Error(), nil
 		}
 		return chatops.FormatPending(resp), chatops.PendingMarkup(resp.Items)
 	case "requests":
-		resp, err := api.ListActions(ctx, cmd.Status, 10, "")
+		projects, err := agent.Authorizer.AllowedProjects(actor)
+		if err != nil {
+			return "actions query denied: " + err.Error(), nil
+		}
+		resp, err := api.ListActionsByProject(ctx, cmd.Status, 10, "", projects)
 		if err != nil {
 			return "actions query failed: " + err.Error(), nil
 		}
@@ -229,20 +256,40 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, cmd chatops.C
 		if err != nil {
 			return "show request failed: " + err.Error(), nil
 		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "show request denied: " + err.Error(), nil
+		}
 		return chatops.FormatActionDetail(item), chatops.ActionMarkup(item)
 	case "approve":
+		item, err := api.GetAction(ctx, cmd.RequestID)
+		if err != nil {
+			return "approve failed: " + err.Error(), nil
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "approve denied: " + err.Error(), nil
+		}
 		resp, err := api.Approve(ctx, cmd.RequestID, actor, approveTimeout)
 		if err != nil {
 			return "approve failed: " + err.Error(), nil
 		}
 		return fmt.Sprintf("approved %s\nstatus=%s\nmessage=%s", cmd.RequestID, resp.Status, strings.TrimSpace(resp.Message)), nil
 	case "reject":
+		item, err := api.GetAction(ctx, cmd.RequestID)
+		if err != nil {
+			return "reject failed: " + err.Error(), nil
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "reject denied: " + err.Error(), nil
+		}
 		resp, err := api.Reject(ctx, cmd.RequestID, actor, cmd.Reason)
 		if err != nil {
 			return "reject failed: " + err.Error(), nil
 		}
 		return fmt.Sprintf("rejected %s\nstatus=%s\nmessage=%s", cmd.RequestID, resp.Status, strings.TrimSpace(resp.Message)), nil
 	case "request":
+		if _, err := authorizeCommandEnv(agent, actor, cmd.Env); err != nil {
+			return "request denied: " + err.Error(), nil
+		}
 		resp, err := api.RequestAction(ctx, chatops.RequestActionRequest{
 			Action:     cmd.Action,
 			Env:        cmd.Env,
@@ -273,9 +320,19 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "", nil, err
 		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "", nil, err
+		}
 		return chatops.FormatActionDetail(item), chatops.ActionMarkup(item), nil
 	case strings.HasPrefix(data, "approve:"):
 		id := strings.TrimPrefix(data, "approve:")
+		item, err := api.GetAction(ctx, id)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "", nil, err
+		}
 		resp, err := api.Approve(ctx, id, actor, approveTimeout)
 		if err != nil {
 			return "", nil, err
@@ -283,6 +340,13 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		return fmt.Sprintf("approved %s\nstatus=%s", id, resp.Status), nil, nil
 	case strings.HasPrefix(data, "reject:"):
 		id := strings.TrimPrefix(data, "reject:")
+		item, err := api.GetAction(ctx, id)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "", nil, err
+		}
 		resp, err := api.Reject(ctx, id, actor, "rejected from telegram button")
 		if err != nil {
 			return "", nil, err
@@ -335,4 +399,18 @@ func emitChatopsAudit(path, actor, action, status, message string) {
 		Message: message,
 		Target:  "telegram",
 	})
+}
+
+func authorizeCommandEnv(agent chatops.Agent, actor, env string) (string, error) {
+	if agent.ProjectForEnv == nil {
+		return "default", nil
+	}
+	project, err := agent.ProjectForEnv(env)
+	if err != nil {
+		return "", err
+	}
+	if err := agent.Authorizer.AuthorizeProject(actor, project); err != nil {
+		return "", err
+	}
+	return project, nil
 }

@@ -17,6 +17,8 @@ users:
     role: operator
     allowed_actions:
       - restart_container
+    allowed_projects:
+      - payments
 deny_patterns:
   - system prompt
 max_input_chars: 100
@@ -42,6 +44,12 @@ max_input_chars: 100
 	}
 	if err := auth.AuthorizeCommand("tg:@operator", Command{Name: "request", Action: "rollback_release", Env: "prod"}); err == nil {
 		t.Fatal("expected action-level allowlist denial")
+	}
+	if err := auth.AuthorizeProject("tg:@operator", "payments"); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AuthorizeProject("tg:@operator", "search"); err == nil {
+		t.Fatal("expected project-level denial")
 	}
 }
 

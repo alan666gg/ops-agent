@@ -23,6 +23,7 @@ func main() {
 	argsRaw := flag.String("args", "", "comma-separated args passed to runbook")
 	policyFile := flag.String("policy", "configs/policies.yaml", "policy file path")
 	auditFile := flag.String("audit", "audit/worker.jsonl", "audit output jsonl")
+	auditDriver := flag.String("audit-driver", "jsonl", "audit store driver: jsonl|sqlite")
 	actor := flag.String("actor", "ops-worker", "actor name")
 	approved := flag.Bool("approved", false, "set true if human approval is granted")
 	timeout := flag.Duration("timeout", 30*time.Second, "execution timeout")
@@ -50,27 +51,37 @@ func main() {
 		fmt.Println("load policy error:", err)
 		os.Exit(1)
 	}
+	auditStore, err := audit.Open(*auditDriver, *auditFile)
+	if err != nil {
+		fmt.Println("open audit store error:", err)
+		os.Exit(1)
+	}
+	project, err := loadProjectName(*envFile, *env)
+	if err != nil {
+		fmt.Println("resolve project error:", err)
+		os.Exit(1)
+	}
 
-	recentAutoActions, err := audit.CountRecentAutoActions(*auditFile, *env, time.Now().UTC().Add(-time.Hour))
+	recentAutoActions, err := auditStore.CountRecentAutoActions(project, *env, time.Now().UTC().Add(-time.Hour))
 	if err != nil {
 		fmt.Println("count recent auto actions error:", err)
 		os.Exit(1)
 	}
 	decision := cfg.Evaluate(*action, *env, recentAutoActions)
 	if !decision.Allowed {
-		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "denied", Message: decision.Reason})
+		emit(auditStore, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Project: project, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "denied", Message: decision.Reason})
 		fmt.Println("denied:", decision.Reason)
 		os.Exit(2)
 	}
 	if decision.RequiresApproval && !*approved {
-		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
+		emit(auditStore, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Project: project, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
 		fmt.Println("approval required:", decision.Reason)
 		os.Exit(3)
 	}
 
 	args := parseArgs(*argsRaw)
 	if err := actions.ValidateArgs(*action, args); err != nil {
-		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "denied", Message: err.Error()})
+		emit(auditStore, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Project: project, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: "denied", Message: err.Error()})
 		fmt.Println("invalid action args:", err)
 		os.Exit(2)
 	}
@@ -83,7 +94,7 @@ func main() {
 			msg = res.Err.Error()
 		}
 	}
-	emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: status, Message: msg, RequiresOK: decision.RequiresApproval})
+	emit(auditStore, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Project: project, Env: *env, TargetHost: *targetHost, Target: *targetHost, Status: status, Message: msg, RequiresOK: decision.RequiresApproval})
 
 	if res.Output != "" {
 		fmt.Println(res.Output)
@@ -109,9 +120,9 @@ func parseArgs(raw string) []string {
 	return out
 }
 
-func emit(path string, evt audit.Event) {
+func emit(store audit.Store, evt audit.Event) {
 	_ = os.MkdirAll("audit", 0o755)
-	_ = audit.AppendJSONL(path, evt)
+	_ = store.Append(evt)
 }
 
 func loadTargetHost(envFile, envName, targetHost string) (*config.Host, error) {
@@ -132,4 +143,15 @@ func loadTargetHost(envFile, envName, targetHost string) (*config.Host, error) {
 		return nil, fmt.Errorf("target host %q not found in env %q", targetHost, envName)
 	}
 	return &host, nil
+}
+
+func loadProjectName(envFile, envName string) (string, error) {
+	cfg, err := config.LoadEnvironments(envFile)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := cfg.Environment(envName); !ok {
+		return "", fmt.Errorf("env not found: %s", envName)
+	}
+	return cfg.ProjectForEnv(envName), nil
 }

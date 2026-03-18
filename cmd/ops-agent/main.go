@@ -88,8 +88,10 @@ func runPolicy(args []string) {
 	fs := flag.NewFlagSet("policy", flag.ExitOnError)
 	action := fs.String("action", "", "action name")
 	env := fs.String("env", "test", "environment name")
+	envFile := fs.String("env-file", "configs/environments.yaml", "environment config file")
 	policyFile := fs.String("policy", "configs/policies.yaml", "policy file")
 	auditFile := fs.String("audit", "audit/events.jsonl", "audit jsonl file")
+	auditDriver := fs.String("audit-driver", "jsonl", "audit store driver: jsonl|sqlite")
 	actor := fs.String("actor", "ops-agent", "actor name")
 	_ = fs.Parse(args)
 
@@ -103,8 +105,17 @@ func runPolicy(args []string) {
 		fmt.Println("load policy error:", err)
 		os.Exit(1)
 	}
+	auditStore, err := audit.Open(*auditDriver, *auditFile)
+	if err != nil {
+		fmt.Println("open audit store error:", err)
+		os.Exit(1)
+	}
+	project := "default"
+	if envCfg, err := config.LoadEnvironments(*envFile); err == nil {
+		project = envCfg.ProjectForEnv(*env)
+	}
 
-	recentAutoActions, err := audit.CountRecentAutoActions(*auditFile, *env, time.Now().UTC().Add(-time.Hour))
+	recentAutoActions, err := auditStore.CountRecentAutoActions(project, *env, time.Now().UTC().Add(-time.Hour))
 	if err != nil {
 		fmt.Println("count audit error:", err)
 		os.Exit(1)
@@ -121,10 +132,11 @@ func runPolicy(args []string) {
 
 	fmt.Printf("policy result: %s (%s)\n", status, msg)
 	_ = os.MkdirAll("audit", 0o755)
-	_ = audit.AppendJSONL(*auditFile, audit.Event{
+	_ = auditStore.Append(audit.Event{
 		Time:       time.Now().UTC(),
 		Actor:      *actor,
 		Action:     *action,
+		Project:    project,
 		Env:        *env,
 		Status:     status,
 		Message:    msg,

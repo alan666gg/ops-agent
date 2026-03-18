@@ -32,6 +32,7 @@ func (s SQLiteStore) ensureSchema(db *sql.DB) error {
 CREATE TABLE IF NOT EXISTS approval_requests (
   id TEXT PRIMARY KEY,
   action TEXT NOT NULL,
+  project TEXT NOT NULL DEFAULT 'default',
   env TEXT NOT NULL DEFAULT '',
   target_host TEXT NOT NULL DEFAULT '',
   args_json TEXT NOT NULL,
@@ -44,11 +45,16 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_approval_status_created ON approval_requests(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_approval_project_status_created ON approval_requests(project, status, created_at DESC);
 `)
 	if err != nil {
 		return err
 	}
 	_, err = db.Exec(`ALTER TABLE approval_requests ADD COLUMN env TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE approval_requests ADD COLUMN project TEXT NOT NULL DEFAULT 'default'`)
 	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return err
 	}
@@ -70,9 +76,9 @@ func (s SQLiteStore) Create(r Request) error {
 		return err
 	}
 	_, err = db.Exec(`
-INSERT INTO approval_requests(id, action, env, target_host, args_json, actor, requires_approval, status, approver, result, created_at, updated_at)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, r.ID, r.Action, r.Env, r.TargetHost, argsJSON, r.Actor, boolToInt(r.RequiresApproval), r.Status, r.Approver, r.Result, r.CreatedAt.UTC().Format(time.RFC3339Nano), r.UpdatedAt.UTC().Format(time.RFC3339Nano))
+INSERT INTO approval_requests(id, action, project, env, target_host, args_json, actor, requires_approval, status, approver, result, created_at, updated_at)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, r.ID, r.Action, normalizeProject(r.Project), r.Env, r.TargetHost, argsJSON, r.Actor, boolToInt(r.RequiresApproval), r.Status, r.Approver, r.Result, r.CreatedAt.UTC().Format(time.RFC3339Nano), r.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -97,9 +103,9 @@ func (s SQLiteStore) Update(id string, update func(*Request) error) (Request, er
 	}
 	_, err = db.Exec(`
 UPDATE approval_requests
-SET action=?, env=?, target_host=?, args_json=?, actor=?, requires_approval=?, status=?, approver=?, result=?, updated_at=?
+SET action=?, project=?, env=?, target_host=?, args_json=?, actor=?, requires_approval=?, status=?, approver=?, result=?, updated_at=?
 WHERE id=?
-`, r.Action, r.Env, r.TargetHost, argsJSON, r.Actor, boolToInt(r.RequiresApproval), r.Status, r.Approver, r.Result, r.UpdatedAt.UTC().Format(time.RFC3339Nano), r.ID)
+`, r.Action, normalizeProject(r.Project), r.Env, r.TargetHost, argsJSON, r.Actor, boolToInt(r.RequiresApproval), r.Status, r.Approver, r.Result, r.UpdatedAt.UTC().Format(time.RFC3339Nano), r.ID)
 	if err != nil {
 		return Request{}, err
 	}
@@ -115,11 +121,11 @@ func (s SQLiteStore) GetByID(id string) (Request, error) {
 	return s.getByID(db, id)
 }
 
-func (s SQLiteStore) ListPending(limit int) ([]Request, error) {
-	return s.ListByStatus("pending", limit)
+func (s SQLiteStore) ListPending(limit int, projects []string) ([]Request, error) {
+	return s.ListByStatus("pending", limit, projects)
 }
 
-func (s SQLiteStore) ListByStatus(status string, limit int) ([]Request, error) {
+func (s SQLiteStore) ListByStatus(status string, limit int, projects []string) ([]Request, error) {
 	db, err := s.open()
 	if err != nil {
 		return nil, err
@@ -128,13 +134,24 @@ func (s SQLiteStore) ListByStatus(status string, limit int) ([]Request, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := db.Query(`
-SELECT id, action, env, target_host, args_json, actor, requires_approval, status, approver, result, created_at, updated_at
+	query := `
+SELECT id, action, project, env, target_host, args_json, actor, requires_approval, status, approver, result, created_at, updated_at
 FROM approval_requests
 WHERE status=?
+`
+	args := []any{status}
+	if len(projects) > 0 {
+		query += " AND project IN (" + placeholders(len(projects)) + ")"
+		for _, project := range projects {
+			args = append(args, normalizeProject(project))
+		}
+	}
+	query += `
 ORDER BY created_at DESC
 LIMIT ?
-`, status, limit)
+`
+	args = append(args, limit)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +194,7 @@ WHERE status='pending' AND created_at < ?
 
 func (s SQLiteStore) getByID(db *sql.DB, id string) (Request, error) {
 	row := db.QueryRow(`
-SELECT id, action, env, target_host, args_json, actor, requires_approval, status, approver, result, created_at, updated_at
+SELECT id, action, project, env, target_host, args_json, actor, requires_approval, status, approver, result, created_at, updated_at
 FROM approval_requests
 WHERE id=?
 `, id)
@@ -200,7 +217,7 @@ func scanRequest(s scanner) (Request, error) {
 	var argsJSON string
 	var reqInt int
 	var created, updated string
-	if err := s.Scan(&r.ID, &r.Action, &r.Env, &r.TargetHost, &argsJSON, &r.Actor, &reqInt, &r.Status, &r.Approver, &r.Result, &created, &updated); err != nil {
+	if err := s.Scan(&r.ID, &r.Action, &r.Project, &r.Env, &r.TargetHost, &argsJSON, &r.Actor, &reqInt, &r.Status, &r.Approver, &r.Result, &created, &updated); err != nil {
 		return Request{}, err
 	}
 	args, err := unmarshalArgs(argsJSON)
@@ -209,6 +226,7 @@ func scanRequest(s scanner) (Request, error) {
 	}
 	r.Args = args
 	r.RequiresApproval = reqInt == 1
+	r.Project = normalizeProject(r.Project)
 	r.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	r.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	return r, nil
@@ -219,4 +237,15 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	items := make([]string, n)
+	for i := range items {
+		items[i] = "?"
+	}
+	return strings.Join(items, ",")
 }

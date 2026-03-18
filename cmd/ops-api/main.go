@@ -32,15 +32,17 @@ type approvalBackend interface {
 	Create(r approval.Request) error
 	Update(id string, update func(*approval.Request) error) (approval.Request, error)
 	GetByID(id string) (approval.Request, error)
-	ListPending(limit int) ([]approval.Request, error)
-	ListByStatus(status string, limit int) ([]approval.Request, error)
+	ListPending(limit int, projects []string) ([]approval.Request, error)
+	ListByStatus(status string, limit int, projects []string) ([]approval.Request, error)
 	ExpirePendingOlderThan(ttl time.Duration) (int64, error)
 }
 
 type server struct {
 	envFile       string
 	policyFile    string
+	auditDriver   string
 	auditFile     string
+	auditStore    audit.Store
 	token         string
 	approvalStore approvalBackend
 	metrics       *apiMetrics
@@ -146,6 +148,7 @@ type actionResponse struct {
 
 type incidentSummary struct {
 	WindowMinutes int            `json:"window_minutes"`
+	Projects      []string       `json:"projects,omitempty"`
 	Total         int            `json:"total_events"`
 	ByStatus      map[string]int `json:"by_status"`
 	TopTargets    []string       `json:"top_targets"`
@@ -156,6 +159,7 @@ func main() {
 	envFile := flag.String("env-file", "configs/environments.yaml", "path to environments yaml")
 	policyFile := flag.String("policy", "configs/policies.yaml", "path to policy yaml")
 	auditFile := flag.String("audit", "audit/api.jsonl", "audit output jsonl")
+	auditDriver := flag.String("audit-driver", "jsonl", "audit store driver: jsonl|sqlite")
 	pendingFile := flag.String("pending-file", "audit/pending-actions.db", "pending approval requests store path")
 	pendingDriver := flag.String("pending-driver", "sqlite", "pending store driver: sqlite|json")
 	pendingTTL := flag.Duration("pending-ttl", 24*time.Hour, "expire pending requests older than this duration (0 to disable)")
@@ -195,6 +199,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	auditStore, err := audit.Open(*auditDriver, *auditFile)
+	if err != nil {
+		panic(err)
+	}
 
 	_ = os.MkdirAll("audit", 0o755)
 	notifierImpl := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
@@ -214,7 +222,9 @@ func main() {
 	s := &server{
 		envFile:       *envFile,
 		policyFile:    *policyFile,
+		auditDriver:   strings.ToLower(strings.TrimSpace(*auditDriver)),
 		auditFile:     *auditFile,
+		auditStore:    auditStore,
 		token:         strings.TrimSpace(*token),
 		approvalStore: store,
 		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
@@ -335,28 +345,31 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"env not found"}`, http.StatusNotFound)
 		return
 	}
+	project := env.ProjectName()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
 	for _, rs := range results {
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{
+		_ = s.auditStore.Append(audit.Event{
 			Time:    time.Now().UTC(),
 			Actor:   "ops-api",
 			Action:  "health_run",
+			Project: project,
 			Env:     envName,
 			Target:  envName + "/" + rs.Name,
 			Status:  resultStatus(rs),
 			Message: rs.Code + ": " + rs.Message,
 		})
 	}
-	if sloResults, err := (slo.Evaluator{}).EvaluateAvailability(s.auditFile, envName, env); err == nil {
+	if sloResults, err := (slo.Evaluator{}).EvaluateAvailabilityStore(s.auditStore, project, envName, env); err == nil {
 		results = append(results, sloResults...)
 		for _, rs := range sloResults {
-			_ = audit.AppendJSONL(s.auditFile, audit.Event{
+			_ = s.auditStore.Append(audit.Event{
 				Time:    time.Now().UTC(),
 				Actor:   "ops-api",
 				Action:  "slo_eval",
+				Project: project,
 				Env:     envName,
 				Target:  envName + "/" + rs.Name,
 				Status:  resultStatus(rs),
@@ -364,28 +377,30 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	} else {
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{
+		_ = s.auditStore.Append(audit.Event{
 			Time:    time.Now().UTC(),
 			Actor:   "ops-api",
 			Action:  "slo_eval",
+			Project: project,
 			Env:     envName,
 			Status:  "failed",
 			Message: err.Error(),
 		})
 	}
 	policyCfg, _ := policy.Load(s.policyFile)
-	recentAutoActions, _ := audit.CountRecentAutoActions(s.auditFile, envName, time.Now().UTC().Add(-time.Hour))
+	recentAutoActions, _ := s.auditStore.CountRecentAutoActions(project, envName, time.Now().UTC().Add(-time.Hour))
 	report := incident.BuildReport("ops-api", envName, env, results, policyCfg, recentAutoActions)
 	if s.notifyCtl.Enabled() && truthy(r.URL.Query().Get("notify")) {
 		decision, err := s.notifyCtl.Process(r.Context(), report)
 		if err != nil {
-			_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Env: envName, Status: "failed", Message: err.Error()})
+			_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Project: project, Env: envName, Status: "failed", Message: err.Error()})
 		} else if decision.Send {
-			_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Env: envName, Status: "ok", Message: notify.DescribeDecision(decision)})
+			_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Project: project, Env: envName, Status: "ok", Message: notify.DescribeDecision(decision)})
 		}
 	}
 
 	_ = json.NewEncoder(w).Encode(map[string]any{
+		"project":           project,
 		"env":               envName,
 		"status":            report.Status,
 		"results":           results,
@@ -427,6 +442,11 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 	if req.Env == "" {
 		req.Env = "test"
 	}
+	project, err := s.projectForEnv(req.Env)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
 	req.TargetHost = strings.TrimSpace(req.TargetHost)
 	targetHost, err := s.resolveTargetHost(req.Env, req.TargetHost)
 	if err != nil {
@@ -439,20 +459,20 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
-	recentAutoActions, err := audit.CountRecentAutoActions(s.auditFile, req.Env, time.Now().UTC().Add(-time.Hour))
+	recentAutoActions, err := s.auditStore.CountRecentAutoActions(project, req.Env, time.Now().UTC().Add(-time.Hour))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 	decision := cfg.Evaluate(req.Action, req.Env, recentAutoActions)
 	if !decision.Allowed {
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "denied", Message: decision.Reason})
+		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Project: project, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "denied", Message: decision.Reason})
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(actionResponse{Status: "denied", Message: decision.Reason})
 		return
 	}
 	if decision.RequiresApproval && !req.Approved {
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
+		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Project: project, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(actionResponse{Status: "approval_required", Message: decision.Reason + " (use /actions/request + /actions/approve)"})
 		return
@@ -466,7 +486,7 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 		status = "failed"
 		message = res.Err.Error()
 	}
-	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: status, Message: strings.TrimSpace(res.Output), RequiresOK: decision.RequiresApproval})
+	_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Project: project, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: status, Message: strings.TrimSpace(res.Output), RequiresOK: decision.RequiresApproval})
 
 	if res.Err != nil {
 		w.WriteHeader(http.StatusBadGateway)
@@ -494,6 +514,11 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 	if req.Env == "" {
 		req.Env = "test"
 	}
+	project, err := s.projectForEnv(req.Env)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
 	req.TargetHost = strings.TrimSpace(req.TargetHost)
 	targetHost, err := s.resolveTargetHost(req.Env, req.TargetHost)
 	if err != nil {
@@ -505,7 +530,7 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
-	recentAutoActions, err := audit.CountRecentAutoActions(s.auditFile, req.Env, time.Now().UTC().Add(-time.Hour))
+	recentAutoActions, err := s.auditStore.CountRecentAutoActions(project, req.Env, time.Now().UTC().Add(-time.Hour))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
@@ -519,7 +544,7 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 
 	rid := newID()
 	now := time.Now().UTC()
-	entry := approval.Request{ID: rid, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Args: req.Args, Actor: req.Actor, RequiresApproval: decision.RequiresApproval, Status: "pending", CreatedAt: now, UpdatedAt: now}
+	entry := approval.Request{ID: rid, Action: req.Action, Project: project, Env: req.Env, TargetHost: req.TargetHost, Args: req.Args, Actor: req.Actor, RequiresApproval: decision.RequiresApproval, Status: "pending", CreatedAt: now, UpdatedAt: now}
 
 	s.mu.Lock()
 	err = s.approvalStore.Create(entry)
@@ -528,7 +553,7 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
-	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: now, Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "pending", Message: "action request created", RequiresOK: decision.RequiresApproval})
+	_ = s.auditStore.Append(audit.Event{Time: now, Actor: req.Actor, Action: req.Action, Project: project, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: "pending", Message: "action request created", RequiresOK: decision.RequiresApproval})
 
 	if !decision.RequiresApproval {
 		res := runAction(req.Action, req.Args, req.TimeoutS, targetHost)
@@ -548,7 +573,7 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 		s.mu.Unlock()
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: newStatus, Message: result})
+		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Project: project, Env: req.Env, TargetHost: req.TargetHost, Target: req.TargetHost, Status: newStatus, Message: result})
 		w.WriteHeader(http.StatusAccepted)
 		_ = json.NewEncoder(w).Encode(requestActionResponse{Status: newStatus, Message: result, RequestID: rid})
 		return
@@ -616,7 +641,7 @@ func (s *server) handleApproveAction(w http.ResponseWriter, r *http.Request) {
 	})
 	s.mu.Unlock()
 
-	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Env: entry.Env, TargetHost: entry.TargetHost, Target: entry.TargetHost, Status: finalStatus, Message: result, RequiresOK: entry.RequiresApproval})
+	_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Project: entry.Project, Env: entry.Env, TargetHost: entry.TargetHost, Target: entry.TargetHost, Status: finalStatus, Message: result, RequiresOK: entry.RequiresApproval})
 	if res.Err != nil {
 		w.WriteHeader(http.StatusBadGateway)
 	}
@@ -659,7 +684,7 @@ func (s *server) handleRejectAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
-	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Env: entry.Env, TargetHost: entry.TargetHost, Target: entry.TargetHost, Status: "denied", Message: req.Reason, RequiresOK: entry.RequiresApproval})
+	_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Project: entry.Project, Env: entry.Env, TargetHost: entry.TargetHost, Target: entry.TargetHost, Status: "denied", Message: req.Reason, RequiresOK: entry.RequiresApproval})
 	_ = json.NewEncoder(w).Encode(actionResponse{Status: "denied", Message: "request rejected"})
 }
 
@@ -675,14 +700,15 @@ func (s *server) handlePendingActions(w http.ResponseWriter, r *http.Request) {
 			limit = 50
 		}
 	}
+	projects := queryProjects(r)
 	s.mu.Lock()
-	items, err := s.approvalStore.ListPending(limit)
+	items, err := s.approvalStore.ListPending(limit, projects)
 	s.mu.Unlock()
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(items), "items": items})
+	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(items), "items": items, "projects": projects})
 }
 
 func (s *server) handleGetAction(w http.ResponseWriter, r *http.Request) {
@@ -722,9 +748,10 @@ func (s *server) handleListActions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
+	projects := queryProjects(r)
 
 	s.mu.Lock()
-	items, err := s.approvalStore.ListByStatus(status, 500)
+	items, err := s.approvalStore.ListByStatus(status, 500, projects)
 	s.mu.Unlock()
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
@@ -752,7 +779,7 @@ func (s *server) handleListActions(w http.ResponseWriter, r *http.Request) {
 		nextCursor = actionCursor(paged[len(paged)-1])
 	}
 
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "count": len(paged), "items": paged, "next_cursor": nextCursor})
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "count": len(paged), "items": paged, "next_cursor": nextCursor, "projects": projects})
 }
 
 func (s *server) handleTailAudit(w http.ResponseWriter, r *http.Request) {
@@ -773,12 +800,23 @@ func (s *server) handleTailAudit(w http.ResponseWriter, r *http.Request) {
 			limit = 50
 		}
 	}
+	projects := queryProjects(r)
+	envName := strings.TrimSpace(r.URL.Query().Get("env"))
+	if s.auditStore.Driver() == "sqlite" {
+		events, err := s.auditStore.List(audit.Query{Projects: projects, Env: envName, Limit: limit})
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"driver": s.auditStore.Driver(), "file": resolvedFile, "count": len(events), "events": events})
+		return
+	}
 	lines, err := tailLines(resolvedFile, limit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"file": resolvedFile, "count": len(lines), "lines": lines})
+	_ = json.NewEncoder(w).Encode(map[string]any{"driver": s.auditStore.Driver(), "file": resolvedFile, "count": len(lines), "lines": lines})
 }
 
 func (s *server) handleIncidentSummary(w http.ResponseWriter, r *http.Request) {
@@ -793,23 +831,21 @@ func (s *server) handleIncidentSummary(w http.ResponseWriter, r *http.Request) {
 			window = 60
 		}
 	}
-	lines, err := tailLines(s.auditFile, 2000)
+	projects := queryProjects(r)
+	cutoff := time.Now().UTC().Add(-time.Duration(window) * time.Minute)
+	events, err := s.auditStore.List(audit.Query{
+		Since:    cutoff,
+		Projects: projects,
+		Limit:    5000,
+	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
 		return
 	}
-	cutoff := time.Now().UTC().Add(-time.Duration(window) * time.Minute)
 	byStatus := map[string]int{}
 	targetCount := map[string]int{}
 	total := 0
-	for _, ln := range lines {
-		var e audit.Event
-		if err := json.Unmarshal([]byte(ln), &e); err != nil {
-			continue
-		}
-		if e.Time.Before(cutoff) {
-			continue
-		}
+	for _, e := range events {
 		total++
 		byStatus[e.Status]++
 		if strings.TrimSpace(e.Target) != "" {
@@ -817,7 +853,7 @@ func (s *server) handleIncidentSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	topTargets := topN(targetCount, 5)
-	_ = json.NewEncoder(w).Encode(incidentSummary{WindowMinutes: window, Total: total, ByStatus: byStatus, TopTargets: topTargets})
+	_ = json.NewEncoder(w).Encode(incidentSummary{WindowMinutes: window, Projects: projects, Total: total, ByStatus: byStatus, TopTargets: topTargets})
 }
 
 func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -936,6 +972,17 @@ func (s *server) resolveTargetHost(envName, targetHost string) (*config.Host, er
 	return &host, nil
 }
 
+func (s *server) projectForEnv(envName string) (string, error) {
+	cfg, err := config.LoadEnvironments(s.envFile)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := cfg.Environment(envName); !ok {
+		return "", fmt.Errorf("env not found: %s", envName)
+	}
+	return cfg.ProjectForEnv(envName), nil
+}
+
 func (s *server) resolveAuditFile(name string) (string, error) {
 	baseDir, err := filepath.Abs(filepath.Dir(s.auditFile))
 	if err != nil {
@@ -958,8 +1005,12 @@ func (s *server) resolveAuditFile(name string) (string, error) {
 	if filepath.Base(name) != name {
 		return "", fmt.Errorf("file must be a basename within the audit directory")
 	}
-	if filepath.Ext(name) != ".jsonl" {
-		return "", fmt.Errorf("file must end with .jsonl")
+	allowedExt := ".jsonl"
+	if s.auditStore != nil && s.auditStore.Driver() == "sqlite" {
+		allowedExt = ".db"
+	}
+	if filepath.Ext(name) != allowedExt {
+		return "", fmt.Errorf("file must end with %s", allowedExt)
 	}
 	candidate := filepath.Join(baseDir, name)
 	resolved, err := filepath.EvalSymlinks(candidate)
@@ -981,6 +1032,25 @@ func (s *server) resolveAuditFile(name string) (string, error) {
 		return "", fmt.Errorf("file escapes audit directory")
 	}
 	return resolved, nil
+}
+
+func queryProjects(r *http.Request) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, raw := range r.URL.Query()["project"] {
+		for _, part := range strings.Split(raw, ",") {
+			project := strings.TrimSpace(part)
+			if project == "" {
+				continue
+			}
+			if _, ok := seen[project]; ok {
+				continue
+			}
+			seen[project] = struct{}{}
+			out = append(out, project)
+		}
+	}
+	return out
 }
 
 func tailLines(path string, limit int) ([]string, error) {

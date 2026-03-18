@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -80,20 +81,28 @@ func CheckersForEnvironment(env config.Environment) []Checker {
 
 	for _, dep := range env.Dependencies {
 		dep = strings.TrimSpace(dep)
-		switch {
-		case strings.HasPrefix(dep, "tcp://"):
-			target := strings.TrimPrefix(dep, "tcp://")
-			parts := strings.Split(target, ":")
-			if len(parts) == 2 {
-				items = append(items, TCPChecker{
-					NameLabel: "dependency_tcp_" + sanitizeName(target),
-					Host:      parts[0],
-					Port:      parts[1],
-				})
-			}
-		case strings.HasPrefix(dep, "http://"), strings.HasPrefix(dep, "https://"):
+		switch scheme, host, port, err := config.ParseDependency(dep); {
+		case err != nil:
+			continue
+		case scheme == "tcp":
+			items = append(items, TCPChecker{
+				NameLabel: "dependency_tcp_" + sanitizeName(net.JoinHostPort(host, port)),
+				Host:      host,
+				Port:      port,
+			})
+		case scheme == "http" || scheme == "https":
 			items = append(items, HTTPChecker{
 				NameLabel: "dependency_http_" + sanitizeName(depLabel(dep)),
+				TargetURL: dep,
+			})
+		case scheme == "redis":
+			items = append(items, RedisChecker{
+				NameLabel: "dependency_redis_" + sanitizeName(net.JoinHostPort(host, port)),
+				TargetURL: dep,
+			})
+		case scheme == "mysql":
+			items = append(items, MySQLChecker{
+				NameLabel: "dependency_mysql_" + sanitizeName(net.JoinHostPort(host, port)),
 				TargetURL: dep,
 			})
 		}

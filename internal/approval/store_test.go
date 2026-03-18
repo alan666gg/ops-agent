@@ -14,7 +14,7 @@ func TestJSONStoreLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err := s.ListPending(10)
+	items, err := s.ListPending(10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestJSONStoreLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	items, err = s.ListByStatus("approved", 10)
+	items, err = s.ListByStatus("approved", 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,11 +56,32 @@ func TestSQLiteStoreExpirePending(t *testing.T) {
 	if changed != 1 {
 		t.Fatalf("expected 1 changed, got %d", changed)
 	}
-	items, err := s.ListByStatus("expired", 10)
+	items, err := s.ListByStatus("expired", 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(items) != 1 || items[0].ID != "r-old" {
 		t.Fatalf("unexpected expired items: %+v", items)
+	}
+}
+
+func TestListByStatusFiltersProjects(t *testing.T) {
+	d := t.TempDir()
+	s := SQLiteStore{Path: filepath.Join(d, "pending.db")}
+	now := time.Now().UTC()
+	for _, item := range []Request{
+		{ID: "r-pay", Action: "restart_container", Project: "payments", Actor: "dev", RequiresApproval: true, Status: "pending", CreatedAt: now, UpdatedAt: now},
+		{ID: "r-search", Action: "restart_container", Project: "search", Actor: "dev", RequiresApproval: true, Status: "pending", CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)},
+	} {
+		if err := s.Create(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := s.ListPending(10, []string{"payments"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Project != "payments" {
+		t.Fatalf("unexpected project filtered items: %+v", items)
 	}
 }

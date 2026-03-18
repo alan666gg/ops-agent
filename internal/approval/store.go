@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
 type Request struct {
 	ID               string    `json:"id"`
 	Action           string    `json:"action"`
+	Project          string    `json:"project,omitempty"`
 	Env              string    `json:"env,omitempty"`
 	TargetHost       string    `json:"target_host,omitempty"`
 	Args             []string  `json:"args"`
@@ -98,18 +100,18 @@ func (s Store) GetByID(id string) (Request, error) {
 	return Request{}, fmt.Errorf("request not found: %s", id)
 }
 
-func (s Store) ListPending(limit int) ([]Request, error) {
-	return s.ListByStatus("pending", limit)
+func (s Store) ListPending(limit int, projects []string) ([]Request, error) {
+	return s.ListByStatus("pending", limit, projects)
 }
 
-func (s Store) ListByStatus(status string, limit int) ([]Request, error) {
+func (s Store) ListByStatus(status string, limit int, projects []string) ([]Request, error) {
 	items, err := s.load()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Request, 0)
 	for _, it := range items {
-		if it.Status == status {
+		if it.Status == status && matchProject(it.Project, projects) {
 			out = append(out, it)
 		}
 	}
@@ -118,6 +120,27 @@ func (s Store) ListByStatus(status string, limit int) ([]Request, error) {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func matchProject(project string, projects []string) bool {
+	if len(projects) == 0 {
+		return true
+	}
+	project = normalizeProject(project)
+	for _, allowed := range projects {
+		if normalizeProject(allowed) == project {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeProject(project string) string {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return "default"
+	}
+	return project
 }
 
 func (s Store) ExpirePendingOlderThan(ttl time.Duration) (int64, error) {
