@@ -4,6 +4,7 @@
 - Worker executes runbooks with policy guardrails and environment-aware approval checks.
 - API exposes health/incidents/actions and approval workflows.
 - Telegram ChatOps is a thin interaction layer over the API and does not bypass policy or approval checks.
+- Telegram can optionally add an OpenAI Responses API tool-calling layer for natural-language requests, but the model still acts only through `ops-api`.
 - All actions are audited.
 - Action definitions are centralized in a shared registry.
 - Runbooks execute locally by default and can be sent over SSH to a configured environment host.

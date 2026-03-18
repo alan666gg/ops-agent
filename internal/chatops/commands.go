@@ -32,7 +32,7 @@ func ParseCommand(text string) (Command, error) {
 	out := Command{Name: strings.ToLower(cmd), Minutes: 60}
 
 	switch out.Name {
-	case "start", "help", "pending":
+	case "start", "help", "pending", "reset":
 		return out, nil
 	case "health":
 		if len(fields) > 1 {
@@ -91,6 +91,7 @@ func HelpText() string {
 	return strings.Join([]string{
 		"ops-agent Telegram commands:",
 		"/help",
+		"/reset",
 		"/health <env>",
 		"/incidents [minutes]",
 		"/pending",

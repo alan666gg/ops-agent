@@ -21,6 +21,11 @@ func main() {
 	pollTimeout := flag.Duration("poll-timeout", 20*time.Second, "telegram getUpdates long poll timeout")
 	approveTimeout := flag.Int("approve-timeout-seconds", 30, "timeout passed to /actions/approve")
 	telegramBase := flag.String("telegram-base", "", "override telegram api base url")
+	openAIAPIKey := flag.String("openai-api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key for natural-language chat")
+	openAIBase := flag.String("openai-base", os.Getenv("OPENAI_BASE_URL"), "override OpenAI-compatible Responses API base url")
+	openAIModel := flag.String("openai-model", envOrDefault("OPENAI_MODEL", "gpt-5-mini"), "OpenAI model for natural-language chat")
+	llmStateFile := flag.String("llm-state-file", "audit/telegram-openai-response.txt", "file storing previous OpenAI response id")
+	llmMaxToolRounds := flag.Int("llm-max-tool-rounds", 6, "maximum number of tool-calling rounds for one Telegram message")
 	flag.Parse()
 
 	if strings.TrimSpace(*botToken) == "" {
@@ -34,6 +39,17 @@ func main() {
 		BaseURL: *apiBase,
 		Token:   strings.TrimSpace(*apiToken),
 	}
+	agent := chatops.Agent{
+		OpenAI: chatops.OpenAIClient{
+			APIKey:  strings.TrimSpace(*openAIAPIKey),
+			BaseURL: strings.TrimSpace(*openAIBase),
+			Model:   strings.TrimSpace(*openAIModel),
+		},
+		OpsAPI:         apiClient,
+		State:          chatops.ConversationStateStore{Path: *llmStateFile},
+		ApproveTimeout: *approveTimeout,
+		MaxToolRounds:  *llmMaxToolRounds,
+	}
 	tg := chatops.TelegramClient{
 		BotToken: strings.TrimSpace(*botToken),
 		BaseURL:  strings.TrimSpace(*telegramBase),
@@ -44,7 +60,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Printf("ops-telegram polling started api=%s chat_id=%d", *apiBase, *chatID)
+	log.Printf("ops-telegram polling started api=%s chat_id=%d llm_enabled=%t model=%s", *apiBase, *chatID, agent.Enabled(), agent.OpenAI.Model)
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), *pollTimeout+10*time.Second)
 		updates, err := tg.GetUpdates(ctx, offset, *pollTimeout)
@@ -59,14 +75,14 @@ func main() {
 			if err := store.Save(offset); err != nil {
 				log.Printf("save offset error: %v", err)
 			}
-			if err := handleUpdate(tg, apiClient, update, *chatID, *approveTimeout); err != nil {
+			if err := handleUpdate(tg, apiClient, agent, update, *chatID, *approveTimeout); err != nil {
 				log.Printf("update %d error: %v", update.UpdateID, err)
 			}
 		}
 	}
 }
 
-func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, update chatops.Update, allowedChatID int64, approveTimeout int) error {
+func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent chatops.Agent, update chatops.Update, allowedChatID int64, approveTimeout int) error {
 	switch {
 	case update.Message != nil:
 		msg := update.Message
@@ -76,16 +92,30 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, update ch
 		if strings.TrimSpace(msg.Text) == "" {
 			return nil
 		}
-		reply, markup := handleCommand(context.Background(), api, msg.Text, actorForUser(msg.From), approveTimeout)
-		if strings.TrimSpace(reply) == "" {
-			return nil
+		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+		defer cancel()
+		if strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
+			return handleCommandUpdate(ctx, tg, api, agent, *msg, approveTimeout)
 		}
-		return tg.SendMessage(context.Background(), msg.Chat.ID, reply, markup)
+		if !agent.Enabled() {
+			return tg.SendMessage(ctx, msg.Chat.ID, "LLM 未配置，当前请先使用 /help 查看可用命令。", nil)
+		}
+		reply, err := agent.Run(ctx, msg.Text, actorForUser(msg.From))
+		if err != nil {
+			return tg.SendMessage(ctx, msg.Chat.ID, "LLM 处理失败："+err.Error()+"\n\n你也可以先用 /help 查看命令模式。", nil)
+		}
+		if strings.TrimSpace(reply) == "" {
+			reply = "我这边没有拿到可展示的结果，你可以换个问法，或者先用 /help 看看命令。"
+		}
+		return tg.SendMessage(ctx, msg.Chat.ID, reply, nil)
 	case update.CallbackQuery != nil:
 		cb := update.CallbackQuery
 		if cb.Message.Chat.ID != allowedChatID {
 			_ = tg.AnswerCallbackQuery(context.Background(), cb.ID, "unauthorized")
 			return nil
+		}
+		if agent.Enabled() {
+			_ = agent.Reset()
 		}
 		reply, err := handleCallback(context.Background(), api, cb.Data, actorForUser(cb.From), approveTimeout)
 		if err != nil {
@@ -99,14 +129,38 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, update ch
 	}
 }
 
+func handleCommandUpdate(ctx context.Context, tg chatops.TelegramClient, api chatops.OpsAPIClient, agent chatops.Agent, msg chatops.Message, approveTimeout int) error {
+	cmd, err := chatops.ParseCommand(msg.Text)
+	if agent.Enabled() {
+		_ = agent.Reset()
+	}
+	if err != nil {
+		return tg.SendMessage(ctx, msg.Chat.ID, err.Error()+"\n\n"+chatops.HelpText(), nil)
+	}
+	if cmd.Name == "reset" {
+		return tg.SendMessage(ctx, msg.Chat.ID, "LLM 上下文已重置。", nil)
+	}
+	reply, markup := executeCommand(ctx, api, cmd, actorForUser(msg.From), approveTimeout)
+	if strings.TrimSpace(reply) == "" {
+		return nil
+	}
+	return tg.SendMessage(ctx, msg.Chat.ID, reply, markup)
+}
+
 func handleCommand(ctx context.Context, api chatops.OpsAPIClient, text, actor string, approveTimeout int) (string, any) {
 	cmd, err := chatops.ParseCommand(text)
 	if err != nil {
 		return err.Error() + "\n\n" + chatops.HelpText(), nil
 	}
+	return executeCommand(ctx, api, cmd, actor, approveTimeout)
+}
+
+func executeCommand(ctx context.Context, api chatops.OpsAPIClient, cmd chatops.Command, actor string, approveTimeout int) (string, any) {
 	switch cmd.Name {
 	case "start", "help":
 		return chatops.HelpText(), nil
+	case "reset":
+		return "LLM 上下文已重置。", nil
 	case "health":
 		resp, err := api.Health(ctx, cmd.Env)
 		if err != nil {
@@ -195,4 +249,11 @@ func defaultString(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
 }

@@ -72,24 +72,38 @@ export OPS_API_TOKEN=change-me
 go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2
 ```
 
-Telegram ChatOps (single chat, no LLM required in v1):
+Telegram ChatOps (single chat, slash commands + optional LLM):
 
 ```bash
 export OPS_API_TOKEN=change-me
 export OPS_TG_BOT_TOKEN=123456:replace-me
-go run ./cmd/ops-telegram --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --bot-token "$OPS_TG_BOT_TOKEN" --chat-id <your_chat_id>
+export OPENAI_API_KEY=<server_side_key>
+# optional when using an OpenAI-compatible gateway
+# export OPENAI_BASE_URL=https://your-gateway.example.com/v1
+# export OPENAI_MODEL=gpt-5-mini
+go run ./cmd/ops-telegram --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --bot-token "$OPS_TG_BOT_TOKEN" --chat-id <your_chat_id> --openai-api-key "$OPENAI_API_KEY"
 ```
 
 Telegram commands:
 
 ```text
 /help
+/reset
 /health prod
 /incidents 60
 /pending
 /request prod restart_container --target-host=app-1 cicdtest-app
 /approve <request_id>
 /reject <request_id> optional reason
+```
+
+Telegram natural language:
+
+```text
+prod 现在状态怎么样
+最近 2 小时有什么异常
+申请重启 app-1 上的 cicdtest-app
+把刚才那个审批通过
 ```
 
 Quick test:
@@ -160,9 +174,12 @@ curl -s "http://127.0.0.1:8090/metrics"
 ## ChatOps
 
 - `cmd/ops-telegram` is a thin Telegram front-end over `ops-api`; it does not execute runbooks directly.
-- The first Telegram version is command-driven and approval-button driven, so it works without any LLM.
+- Slash commands and approval buttons always work without any LLM.
+- If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.
+- The LLM is a planner only: it can read health/incidents/pending requests and submit approve/reject/request actions through `ops-api`, so policy, approval, audit, and execution still stay in `ops-api` + `ops-worker`.
+- `/reset` clears the stored LLM conversation state, and slash commands or approval buttons also reset that state to avoid stale context.
 - Restrict it with a single `--chat-id` so only one Telegram chat can interact with the control plane.
-- A future model layer can sit on top of this command/UI layer, but policy, approval, audit, and execution stay in `ops-api` + `ops-worker`.
+- Users do not need their own ChatGPT/OpenAI account authorization; the bot uses one server-side API key.
 
 ## SLO Trends
 

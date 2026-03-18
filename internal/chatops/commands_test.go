@@ -28,6 +28,14 @@ func TestParseCommandHealthAndRequest(t *testing.T) {
 	if len(cmd.Args) != 1 || cmd.Args[0] != "api-1" {
 		t.Fatalf("unexpected request args: %+v", cmd.Args)
 	}
+
+	cmd, err = ParseCommand("/reset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "reset" {
+		t.Fatalf("unexpected reset command: %+v", cmd)
+	}
 }
 
 func TestParseCommandRejectRequiresRequestID(t *testing.T) {
