@@ -93,6 +93,10 @@ WHERE id=?
 }
 
 func (s SQLiteStore) ListPending(limit int) ([]Request, error) {
+	return s.ListByStatus("pending", limit)
+}
+
+func (s SQLiteStore) ListByStatus(status string, limit int) ([]Request, error) {
 	db, err := s.open()
 	if err != nil {
 		return nil, err
@@ -104,10 +108,10 @@ func (s SQLiteStore) ListPending(limit int) ([]Request, error) {
 	rows, err := db.Query(`
 SELECT id, action, args_json, actor, requires_approval, status, approver, result, created_at, updated_at
 FROM approval_requests
-WHERE status='pending'
+WHERE status=?
 ORDER BY created_at DESC
 LIMIT ?
-`, limit)
+`, status, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +129,27 @@ LIMIT ?
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out, nil
+}
+
+func (s SQLiteStore) ExpirePendingOlderThan(ttl time.Duration) (int64, error) {
+	if ttl <= 0 {
+		return 0, nil
+	}
+	db, err := s.open()
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	cutoff := time.Now().UTC().Add(-ttl).Format(time.RFC3339Nano)
+	res, err := db.Exec(`
+UPDATE approval_requests
+SET status='expired', result='expired by ttl', updated_at=?
+WHERE status='pending' AND created_at < ?
+`, time.Now().UTC().Format(time.RFC3339Nano), cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s SQLiteStore) getByID(db *sql.DB, id string) (Request, error) {

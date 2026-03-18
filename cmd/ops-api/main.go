@@ -27,6 +27,8 @@ type approvalBackend interface {
 	Create(r approval.Request) error
 	Update(id string, update func(*approval.Request) error) (approval.Request, error)
 	ListPending(limit int) ([]approval.Request, error)
+	ListByStatus(status string, limit int) ([]approval.Request, error)
+	ExpirePendingOlderThan(ttl time.Duration) (int64, error)
 }
 
 type server struct {
@@ -86,6 +88,7 @@ func main() {
 	auditFile := flag.String("audit", "audit/api.jsonl", "audit output jsonl")
 	pendingFile := flag.String("pending-file", "audit/pending-actions.db", "pending approval requests store path")
 	pendingDriver := flag.String("pending-driver", "sqlite", "pending store driver: sqlite|json")
+	pendingTTL := flag.Duration("pending-ttl", 24*time.Hour, "expire pending requests older than this duration (0 to disable)")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	flag.Parse()
 
@@ -110,6 +113,12 @@ func main() {
 		},
 	}
 
+	if *pendingTTL > 0 {
+		if n, err := s.approvalStore.ExpirePendingOlderThan(*pendingTTL); err == nil && n > 0 {
+			fmt.Printf("expired pending requests: %d\n", n)
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health/run", s.handleRunHealth)
 	mux.HandleFunc("/actions/run", s.handleRunAction)
@@ -117,6 +126,7 @@ func main() {
 	mux.HandleFunc("/actions/approve", s.handleApproveAction)
 	mux.HandleFunc("/actions/reject", s.handleRejectAction)
 	mux.HandleFunc("/actions/pending", s.handlePendingActions)
+	mux.HandleFunc("/actions/list", s.handleListActions)
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
@@ -465,6 +475,32 @@ func (s *server) handlePendingActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(items), "items": items})
+}
+
+func (s *server) handleListActions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "" {
+		status = "pending"
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+		if limit <= 0 || limit > 500 {
+			limit = 50
+		}
+	}
+	s.mu.Lock()
+	items, err := s.approvalStore.ListByStatus(status, limit)
+	s.mu.Unlock()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "count": len(items), "items": items})
 }
 
 func (s *server) handleTailAudit(w http.ResponseWriter, r *http.Request) {

@@ -84,13 +84,17 @@ func (s Store) Update(id string, update func(*Request) error) (Request, error) {
 }
 
 func (s Store) ListPending(limit int) ([]Request, error) {
+	return s.ListByStatus("pending", limit)
+}
+
+func (s Store) ListByStatus(status string, limit int) ([]Request, error) {
 	items, err := s.load()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Request, 0)
 	for _, it := range items {
-		if it.Status == "pending" {
+		if it.Status == status {
 			out = append(out, it)
 		}
 	}
@@ -99,4 +103,30 @@ func (s Store) ListPending(limit int) ([]Request, error) {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s Store) ExpirePendingOlderThan(ttl time.Duration) (int64, error) {
+	if ttl <= 0 {
+		return 0, nil
+	}
+	items, err := s.load()
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().UTC().Add(-ttl)
+	var changed int64
+	for i := range items {
+		if items[i].Status == "pending" && items[i].CreatedAt.Before(cutoff) {
+			items[i].Status = "expired"
+			items[i].Result = "expired by ttl"
+			items[i].UpdatedAt = time.Now().UTC()
+			changed++
+		}
+	}
+	if changed > 0 {
+		if err := s.save(items); err != nil {
+			return 0, err
+		}
+	}
+	return changed, nil
 }

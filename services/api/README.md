@@ -16,6 +16,7 @@ Endpoints:
 - `POST /actions/run` (Bearer token; direct mode)
 - `POST /actions/request` (Bearer token; creates approval ticket)
 - `GET /actions/pending` (Bearer token)
+- `GET /actions/list?status=pending|executed|failed|denied|expired` (Bearer token)
 - `POST /actions/approve` (Bearer token)
 - `POST /actions/reject` (Bearer token)
 - `GET /audit/tail?limit=50` (Bearer token)

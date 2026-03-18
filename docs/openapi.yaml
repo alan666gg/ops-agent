@@ -49,6 +49,18 @@ paths:
       summary: Reject a pending request
       responses:
         '200': { description: Rejected }
+  /actions/list:
+    get:
+      summary: List actions by status
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, default: pending }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50 }
+      responses:
+        '200': { description: Action list }
   /actions/run:
     post:
       summary: Direct action execution (policy guarded)
