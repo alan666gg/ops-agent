@@ -1,0 +1,19 @@
+policies:
+  auto_actions:
+    allowed:
+      - check_host_health
+      - check_service_health
+      - check_dependencies
+    require_approval:
+      - restart_container
+      - deploy_release
+      - rollback_release
+
+  forbidden_commands:
+    - "rm -rf /"
+    - "DROP DATABASE"
+    - "shutdown -h now"
+
+  production:
+    require_human_approval: true
+    max_auto_actions_per_hour: 5

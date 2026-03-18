@@ -1,0 +1,20 @@
+environments:
+  test:
+    hosts:
+      - name: test-app-1
+        host: 127.0.0.1
+        ssh_user: root
+        ssh_port: 22
+    services:
+      - name: app
+        type: container
+        container_name: cicdtest-app
+        healthcheck_url: http://127.0.0.1:8080/
+    dependencies:
+      - tcp://127.0.0.1:6379
+      - tcp://127.0.0.1:3306
+
+  prod:
+    hosts: []
+    services: []
+    dependencies: []
