@@ -40,6 +40,13 @@ Scheduler (periodic health checks):
 go run ./cmd/ops-scheduler --env test --env-file configs/environments.yaml --audit audit/scheduler.jsonl --once
 ```
 
+The scheduler/API health pass now includes:
+
+- local agent host basics
+- SSH reachability for each host declared under `environments.<env>.hosts`
+- service HTTP checks from `services[].healthcheck_url`
+- HTTP/TCP dependency checks from `dependencies[]`
+
 Worker (policy-gated runbook execution):
 
 ```bash
@@ -107,3 +114,4 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `policies.production.max_auto_actions_per_hour` limits unattended production actions per hour; excess requests are converted to approval-required.
 - `GET /audit/tail` only reads `.jsonl` files inside the configured audit directory.
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
+- Environment health checks run concurrently while keeping a stable output order.

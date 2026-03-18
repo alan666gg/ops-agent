@@ -26,3 +26,5 @@ Endpoints:
 OpenAPI draft: `docs/openapi.yaml`
 
 If `target_host` is provided, the API resolves that host from the selected environment and runs the runbook over SSH.
+
+`GET /health/run` includes local host basics, configured host SSH reachability, service health URLs, and dependency checks for the selected environment.

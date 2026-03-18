@@ -279,29 +279,9 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := []checks.Checker{checks.HostChecker{}}
-	for _, svc := range env.Services {
-		if strings.TrimSpace(svc.HealthcheckURL) != "" {
-			items = append(items, checks.HTTPChecker{TargetURL: svc.HealthcheckURL})
-		}
-	}
-	for _, dep := range env.Dependencies {
-		dep = strings.TrimSpace(dep)
-		if strings.HasPrefix(dep, "tcp://") {
-			target := strings.TrimPrefix(dep, "tcp://")
-			parts := strings.Split(target, ":")
-			if len(parts) == 2 {
-				items = append(items, checks.TCPChecker{NameLabel: "dep_tcp", Host: parts[0], Port: parts[1]})
-			}
-		}
-		if strings.HasPrefix(dep, "http://") || strings.HasPrefix(dep, "https://") {
-			items = append(items, checks.HTTPChecker{TargetURL: dep})
-		}
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	results := checks.NewRegistry(items...).RunAll(ctx)
+	results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
 
 	status := "ok"
 	for _, rs := range results {

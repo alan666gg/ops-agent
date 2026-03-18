@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,19 +42,34 @@ func NewRegistry(items ...Checker) Registry {
 }
 
 func (r Registry) RunAll(ctx context.Context) []Result {
-	out := make([]Result, 0, len(r.items))
-	for _, c := range r.items {
-		out = append(out, c.Run(ctx))
+	if len(r.items) == 0 {
+		return nil
 	}
+	out := make([]Result, len(r.items))
+	var wg sync.WaitGroup
+	wg.Add(len(r.items))
+	for i, c := range r.items {
+		go func(i int, c Checker) {
+			defer wg.Done()
+			out[i] = c.Run(ctx)
+		}(i, c)
+	}
+	wg.Wait()
 	return out
 }
 
 type HTTPChecker struct {
+	NameLabel string
 	TargetURL string
 	Timeout   time.Duration
 }
 
-func (c HTTPChecker) Name() string { return "http_health" }
+func (c HTTPChecker) Name() string {
+	if c.NameLabel != "" {
+		return c.NameLabel
+	}
+	return "http_health"
+}
 
 func (c HTTPChecker) Run(ctx context.Context) Result {
 	t := c.Timeout

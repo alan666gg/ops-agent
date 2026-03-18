@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/alan666gg/ops-agent/internal/audit"
@@ -37,27 +36,7 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
-		checkers := []checks.Checker{checks.HostChecker{}}
-		for _, s := range env.Services {
-			if strings.TrimSpace(s.HealthcheckURL) != "" {
-				checkers = append(checkers, checks.HTTPChecker{TargetURL: s.HealthcheckURL})
-			}
-		}
-		for _, dep := range env.Dependencies {
-			dep = strings.TrimSpace(dep)
-			if strings.HasPrefix(dep, "tcp://") {
-				target := strings.TrimPrefix(dep, "tcp://")
-				parts := strings.Split(target, ":")
-				if len(parts) == 2 {
-					checkers = append(checkers, checks.TCPChecker{NameLabel: "dep_tcp", Host: parts[0], Port: parts[1]})
-				}
-			}
-			if strings.HasPrefix(dep, "http://") || strings.HasPrefix(dep, "https://") {
-				checkers = append(checkers, checks.HTTPChecker{TargetURL: dep})
-			}
-		}
-
-		results := checks.NewRegistry(checkers...).RunAll(ctx)
+		results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
 		for _, r := range results {
 			status := "ok"
 			if r.Severity == checks.SeverityWarn {
