@@ -7,7 +7,7 @@ Internal Ops Agent scaffold with policy-gated runbooks, approvals, and audit tra
 - `skills/` domain skills for health/incident/deploy
 - `runbooks/` executable guarded operations
 - `configs/` environment and policy configs
-- `services/` api/scheduler/worker placeholders
+- `services/` api/scheduler/telegram usage notes
 - `docs/` architecture and roadmap
 
 ## Quick start
@@ -70,6 +70,26 @@ API (minimal control plane):
 ```bash
 export OPS_API_TOKEN=change-me
 go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2
+```
+
+Telegram ChatOps (single chat, no LLM required in v1):
+
+```bash
+export OPS_API_TOKEN=change-me
+export OPS_TG_BOT_TOKEN=123456:replace-me
+go run ./cmd/ops-telegram --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --bot-token "$OPS_TG_BOT_TOKEN" --chat-id <your_chat_id>
+```
+
+Telegram commands:
+
+```text
+/help
+/health prod
+/incidents 60
+/pending
+/request prod restart_container --target-host=app-1 cicdtest-app
+/approve <request_id>
+/reject <request_id> optional reason
 ```
 
 Quick test:
@@ -136,6 +156,13 @@ curl -s "http://127.0.0.1:8090/metrics"
 - Active silences and maintenance windows suppress notifications without stopping health checks; if an issue survives the mute window, the controller will deliver it after the window ends.
 - `--notify-trigger-after` and `--notify-recovery-after` let you suppress flapping by requiring consecutive unhealthy or healthy cycles before opening or closing an incident.
 - Health responses now include `summary`, `suggestions`, and `suppressed_checks` so callers can distinguish root causes from downstream symptoms.
+
+## ChatOps
+
+- `cmd/ops-telegram` is a thin Telegram front-end over `ops-api`; it does not execute runbooks directly.
+- The first Telegram version is command-driven and approval-button driven, so it works without any LLM.
+- Restrict it with a single `--chat-id` so only one Telegram chat can interact with the control plane.
+- A future model layer can sit on top of this command/UI layer, but policy, approval, audit, and execution stay in `ops-api` + `ops-worker`.
 
 ## SLO Trends
 

@@ -1,0 +1,70 @@
+package chatops
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/alan666gg/ops-agent/internal/approval"
+	"github.com/alan666gg/ops-agent/internal/checks"
+	"github.com/alan666gg/ops-agent/internal/incident"
+)
+
+func TestParseCommandHealthAndRequest(t *testing.T) {
+	cmd, err := ParseCommand("/health prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "health" || cmd.Env != "prod" {
+		t.Fatalf("unexpected health command: %+v", cmd)
+	}
+
+	cmd, err = ParseCommand("/request prod restart_container --target-host=app-1 api-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "request" || cmd.Env != "prod" || cmd.Action != "restart_container" || cmd.TargetHost != "app-1" {
+		t.Fatalf("unexpected request command: %+v", cmd)
+	}
+	if len(cmd.Args) != 1 || cmd.Args[0] != "api-1" {
+		t.Fatalf("unexpected request args: %+v", cmd.Args)
+	}
+}
+
+func TestParseCommandRejectRequiresRequestID(t *testing.T) {
+	if _, err := ParseCommand("/reject"); err == nil {
+		t.Fatal("expected reject validation error")
+	}
+}
+
+func TestFormatHealthIncludesSuppressedAndSuggestions(t *testing.T) {
+	text := FormatHealth(HealthResponse{
+		Status:  "fail",
+		Summary: "ops-api prod: 1 failed",
+		Results: []checks.Result{
+			{Name: "host_ssh_app_1", Severity: checks.SeverityFail, Message: "connection refused"},
+		},
+		SuppressedChecks: []incident.SuppressedCheck{
+			{Result: checks.Result{Name: "service_api"}, SuppressedBy: "host_ssh_app_1"},
+		},
+		Suggestions: []incident.Suggestion{
+			{Action: "check_host_health", TargetHost: "app-1"},
+		},
+	})
+	for _, want := range []string{"[FAIL]", "host_ssh_app_1", "suppressed service_api", "suggest check_host_health"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+}
+
+func TestFormatPending(t *testing.T) {
+	text := FormatPending(PendingResponse{
+		Count: 1,
+		Items: []approval.Request{
+			{ID: "r1", Action: "restart_container", Env: "prod", Args: []string{"api-1"}, Actor: "tg:@ops"},
+		},
+	})
+	if !strings.Contains(text, "r1 restart_container env=prod") {
+		t.Fatalf("unexpected pending text: %s", text)
+	}
+}
