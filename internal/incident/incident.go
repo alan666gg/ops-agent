@@ -29,6 +29,19 @@ type SuppressedCheck struct {
 	Reason       string        `json:"reason"`
 }
 
+type ExternalAlert struct {
+	Provider     string            `json:"provider"`
+	Receiver     string            `json:"receiver,omitempty"`
+	AlertName    string            `json:"alert_name,omitempty"`
+	Fingerprint  string            `json:"fingerprint,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
+	Annotations  map[string]string `json:"annotations,omitempty"`
+	GeneratorURL string            `json:"generator_url,omitempty"`
+	ExternalURL  string            `json:"external_url,omitempty"`
+	StartsAt     time.Time         `json:"starts_at,omitempty"`
+	EndsAt       time.Time         `json:"ends_at,omitempty"`
+}
+
 type Report struct {
 	Source           string            `json:"source"`
 	Key              string            `json:"key,omitempty"`
@@ -40,6 +53,7 @@ type Report struct {
 	Fingerprint      string            `json:"fingerprint"`
 	TriggeredAt      time.Time         `json:"triggered_at"`
 	Results          []checks.Result   `json:"results"`
+	External         *ExternalAlert    `json:"external,omitempty"`
 	Suggestions      []Suggestion      `json:"suggestions,omitempty"`
 	FailCount        int               `json:"fail_count"`
 	WarnCount        int               `json:"warn_count"`

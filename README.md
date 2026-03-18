@@ -121,9 +121,10 @@ API (minimal control plane):
 ```bash
 export OPS_API_TOKEN=change-me
 export OPS_ALERT_TOKEN=change-me-alerts
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2
+export OPS_ALERTMANAGER_API_TOKEN=change-me-alertmanager-api
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2 --alertmanager-sync-ack --alertmanager-silence-duration 2h
 # recommended for larger history windows and incident summaries
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --pending-driver sqlite --pending-file audit/pending-actions.db
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --pending-driver sqlite --pending-file audit/pending-actions.db --alertmanager-sync-ack --alertmanager-silence-duration 2h
 ```
 
 Alertmanager webhook ingestion:
@@ -138,6 +139,9 @@ receivers:
             type: Bearer
             credentials: change-me-alerts
 ```
+
+If an incident originated from Alertmanager and the API is started with `--alertmanager-sync-ack`, acknowledging that incident through `/incidents/ack`, Telegram `/ack`, or the LLM tool flow will also create a matching Alertmanager silence for the original alert labels.
+Use `OPS_ALERTMANAGER_API_TOKEN` when your Alertmanager API requires authentication, and tune the silence window with `--alertmanager-silence-duration`.
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
 

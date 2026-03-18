@@ -22,6 +22,7 @@ Current behavior:
 - Calls `ops-api` for Prometheus queries tied to the selected environment
 - Calls `ops-api` for active incident lifecycle too, including acknowledge and owner assignment
 - Shows Alertmanager-ingested incidents in the same `/active`, `/incident`, `/timeline`, `/ack`, and `/assign` flows
+- Can trigger an upstream Alertmanager silence when `/ack` is used on an Alertmanager-backed incident and the API enables `--alertmanager-sync-ack`
 - Renders inline `Approve` / `Reject` buttons for pending approval items
 - Uses OpenAI Responses API tool calling for non-`/` natural-language messages when `OPENAI_API_KEY` is configured
 - Keeps slash commands as a fallback and resets LLM context whenever a slash command or approval button is used

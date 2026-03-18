@@ -100,3 +100,33 @@ func TestMemoryStoreAllowsMultipleKeysPerSourceEnv(t *testing.T) {
 		t.Fatalf("expected two open incidents, got %+v", items)
 	}
 }
+
+func TestSQLiteStorePersistsExternalAlertContext(t *testing.T) {
+	store := SQLiteStore{Path: filepath.Join(t.TempDir(), "incidents.db")}
+	now := time.Now().UTC()
+	rec, err := store.SyncReport(Report{
+		Source:      "alertmanager",
+		Key:         "fp-1",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "external alert",
+		Fingerprint: "fp-1",
+		FailCount:   1,
+		External: &ExternalAlert{
+			Provider:    "alertmanager",
+			ExternalURL: "http://alertmanager.test",
+			Labels:      map[string]string{"alertname": "HighErrorRate"},
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := store.Get(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.External == nil || got.External.Provider != "alertmanager" || got.External.Labels["alertname"] != "HighErrorRate" {
+		t.Fatalf("unexpected external alert context: %+v", got)
+	}
+}

@@ -59,7 +59,7 @@ func (s SQLiteStore) List(filter Filter) ([]Record, error) {
 	defer db.Close()
 
 	query := `
-SELECT id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count
+SELECT id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count
 FROM incident_records
 WHERE 1=1
 `
@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS incident_records (
   summary TEXT NOT NULL DEFAULT '',
   fingerprint TEXT NOT NULL DEFAULT '',
   highlights_json TEXT NOT NULL DEFAULT '[]',
+  external_json TEXT NOT NULL DEFAULT 'null',
   open INTEGER NOT NULL DEFAULT 0,
   acknowledged INTEGER NOT NULL DEFAULT 0,
   acknowledged_by TEXT NOT NULL DEFAULT '',
@@ -206,12 +207,16 @@ CREATE INDEX IF NOT EXISTS idx_incident_project_env ON incident_records(project,
 	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return err
 	}
+	_, err = db.Exec(`ALTER TABLE incident_records ADD COLUMN external_json TEXT NOT NULL DEFAULT 'null'`)
+	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return err
+	}
 	return nil
 }
 
 func (s SQLiteStore) get(db *sql.DB, id string) (Record, bool, error) {
 	row := db.QueryRow(`
-SELECT id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count
+SELECT id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count
 FROM incident_records
 WHERE id = ?
 `, strings.TrimSpace(id))
@@ -230,9 +235,13 @@ func (s SQLiteStore) put(db *sql.DB, rec Record) error {
 	if err != nil {
 		return err
 	}
+	externalJSON, err := json.Marshal(rec.External)
+	if err != nil {
+		return err
+	}
 	_, err = db.Exec(`
-INSERT INTO incident_records(id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO incident_records(id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   source=excluded.source,
   scope_key=excluded.scope_key,
@@ -242,6 +251,7 @@ ON CONFLICT(id) DO UPDATE SET
   summary=excluded.summary,
   fingerprint=excluded.fingerprint,
   highlights_json=excluded.highlights_json,
+  external_json=excluded.external_json,
   open=excluded.open,
   acknowledged=excluded.acknowledged,
   acknowledged_by=excluded.acknowledged_by,
@@ -256,7 +266,7 @@ ON CONFLICT(id) DO UPDATE SET
   fail_count=excluded.fail_count,
   warn_count=excluded.warn_count,
   suppressed_count=excluded.suppressed_count
-`, strings.TrimSpace(rec.ID), rec.Source, rec.Key, defaultProject(rec.Project), rec.Env, rec.Status, rec.Summary, rec.Fingerprint, string(highlightsJSON), boolToInt(rec.Open), boolToInt(rec.Acknowledged), rec.AcknowledgedBy, formatTime(rec.AcknowledgedAt), rec.Owner, rec.Note, formatTime(rec.FirstSeenAt), formatTime(rec.LastSeenAt), formatTime(rec.LastChangedAt), formatTime(rec.ClosedAt), formatTime(rec.UpdatedAt), rec.FailCount, rec.WarnCount, rec.SuppressedCount)
+`, strings.TrimSpace(rec.ID), rec.Source, rec.Key, defaultProject(rec.Project), rec.Env, rec.Status, rec.Summary, rec.Fingerprint, string(highlightsJSON), string(externalJSON), boolToInt(rec.Open), boolToInt(rec.Acknowledged), rec.AcknowledgedBy, formatTime(rec.AcknowledgedAt), rec.Owner, rec.Note, formatTime(rec.FirstSeenAt), formatTime(rec.LastSeenAt), formatTime(rec.LastChangedAt), formatTime(rec.ClosedAt), formatTime(rec.UpdatedAt), rec.FailCount, rec.WarnCount, rec.SuppressedCount)
 	return err
 }
 
@@ -267,14 +277,16 @@ type recordScanner interface {
 func scanRecord(s recordScanner) (Record, error) {
 	var rec Record
 	var highlightsJSON string
+	var externalJSON string
 	var openInt, ackInt int
 	var ackAt, firstSeen, lastSeen, lastChanged, closedAt, updatedAt string
-	if err := s.Scan(&rec.ID, &rec.Source, &rec.Key, &rec.Project, &rec.Env, &rec.Status, &rec.Summary, &rec.Fingerprint, &highlightsJSON, &openInt, &ackInt, &rec.AcknowledgedBy, &ackAt, &rec.Owner, &rec.Note, &firstSeen, &lastSeen, &lastChanged, &closedAt, &updatedAt, &rec.FailCount, &rec.WarnCount, &rec.SuppressedCount); err != nil {
+	if err := s.Scan(&rec.ID, &rec.Source, &rec.Key, &rec.Project, &rec.Env, &rec.Status, &rec.Summary, &rec.Fingerprint, &highlightsJSON, &externalJSON, &openInt, &ackInt, &rec.AcknowledgedBy, &ackAt, &rec.Owner, &rec.Note, &firstSeen, &lastSeen, &lastChanged, &closedAt, &updatedAt, &rec.FailCount, &rec.WarnCount, &rec.SuppressedCount); err != nil {
 		return Record{}, err
 	}
 	rec.Open = openInt == 1
 	rec.Acknowledged = ackInt == 1
 	_ = json.Unmarshal([]byte(highlightsJSON), &rec.Highlights)
+	_ = json.Unmarshal([]byte(externalJSON), &rec.External)
 	rec.AcknowledgedAt, _ = parseTime(ackAt)
 	rec.FirstSeenAt, _ = parseTime(firstSeen)
 	rec.LastSeenAt, _ = parseTime(lastSeen)

@@ -276,6 +276,76 @@ func TestHandleAlertmanagerWebhook(t *testing.T) {
 	}
 }
 
+func TestHandleAckIncidentSyncsAlertmanagerSilence(t *testing.T) {
+	now := time.Now().UTC()
+	store := &incident.MemoryStore{}
+	rec, err := store.SyncReport(incident.Report{
+		Source:      "alertmanager",
+		Key:         "fp-1",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "external alert",
+		Fingerprint: "fp-1",
+		FailCount:   1,
+		External: &incident.ExternalAlert{
+			Provider:    "alertmanager",
+			ExternalURL: "http://alertmanager.test",
+			Labels: map[string]string{
+				"alertname": "HighErrorRate",
+				"instance":  "api-1:9090",
+			},
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prevFactory := newAlertmanagerHTTPClient
+	newAlertmanagerHTTPClient = func(timeout time.Duration) *http.Client {
+		return &http.Client{Transport: promRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/api/v2/silences" {
+				t.Fatalf("unexpected silence path: %s", r.URL.Path)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer api-token" {
+				t.Fatalf("unexpected auth header: %q", got)
+			}
+			return promJSONResponse(http.StatusOK, `{"silenceID":"sil-123"}`), nil
+		})}
+	}
+	defer func() { newAlertmanagerHTTPClient = prevFactory }()
+
+	auditFile := filepath.Join(t.TempDir(), "audit.jsonl")
+	s := &server{
+		auditStore:    audit.JSONLStore{Path: auditFile},
+		incidentStore: store,
+		syncAlertAck:  true,
+		alertSilence:  2 * time.Hour,
+		alertAPIToken: "api-token",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/incidents/ack", bytes.NewBufferString(`{"id":"`+rec.ID+`","actor":"tg:@ops","note":"investigating"}`))
+	rr := httptest.NewRecorder()
+
+	s.handleAckIncident(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var got incident.Record
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Acknowledged || !strings.Contains(got.Note, "alertmanager_silence=sil-123") {
+		t.Fatalf("unexpected ack response: %+v", got)
+	}
+	events, err := audit.RecentEvents(auditFile, audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || events[0].Action != "alertmanager_silence" || events[0].Status != "ok" {
+		t.Fatalf("unexpected audit trail: %+v", events)
+	}
+}
+
 type promRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f promRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {

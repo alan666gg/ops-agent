@@ -89,6 +89,18 @@ func buildReport(now time.Time, webhook AlertmanagerWebhook, alert Alert, resolv
 		Fingerprint: fingerprint,
 		TriggeredAt: pickTriggeredAt(now, alert),
 		Results:     []checks.Result{result},
+		External: &incident.ExternalAlert{
+			Provider:     "alertmanager",
+			Receiver:     strings.TrimSpace(webhook.Receiver),
+			AlertName:    alertName,
+			Fingerprint:  fingerprint,
+			Labels:       cloneMap(labels),
+			Annotations:  cloneMap(annotations),
+			GeneratorURL: strings.TrimSpace(alert.GeneratorURL),
+			ExternalURL:  strings.TrimSpace(webhook.ExternalURL),
+			StartsAt:     alert.StartsAt.UTC(),
+			EndsAt:       alert.EndsAt.UTC(),
+		},
 		TotalChecks: 1,
 	}
 	switch status {
@@ -197,6 +209,17 @@ func mergeMaps(base, extra map[string]string) map[string]string {
 		out[key] = strings.TrimSpace(value)
 	}
 	for key, value := range extra {
+		out[key] = strings.TrimSpace(value)
+	}
+	return out
+}
+
+func cloneMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for key, value := range src {
 		out[key] = strings.TrimSpace(value)
 	}
 	return out

@@ -8,29 +8,30 @@ import (
 )
 
 type Record struct {
-	ID              string    `json:"id"`
-	Source          string    `json:"source"`
-	Key             string    `json:"key,omitempty"`
-	Project         string    `json:"project,omitempty"`
-	Env             string    `json:"env"`
-	Status          string    `json:"status"`
-	Summary         string    `json:"summary"`
-	Fingerprint     string    `json:"fingerprint"`
-	Highlights      []string  `json:"highlights,omitempty"`
-	Open            bool      `json:"open"`
-	Acknowledged    bool      `json:"acknowledged"`
-	AcknowledgedBy  string    `json:"acknowledged_by,omitempty"`
-	AcknowledgedAt  time.Time `json:"acknowledged_at,omitempty"`
-	Owner           string    `json:"owner,omitempty"`
-	Note            string    `json:"note,omitempty"`
-	FirstSeenAt     time.Time `json:"first_seen_at,omitempty"`
-	LastSeenAt      time.Time `json:"last_seen_at,omitempty"`
-	LastChangedAt   time.Time `json:"last_changed_at,omitempty"`
-	ClosedAt        time.Time `json:"closed_at,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at,omitempty"`
-	FailCount       int       `json:"fail_count"`
-	WarnCount       int       `json:"warn_count"`
-	SuppressedCount int       `json:"suppressed_count"`
+	ID              string         `json:"id"`
+	Source          string         `json:"source"`
+	Key             string         `json:"key,omitempty"`
+	Project         string         `json:"project,omitempty"`
+	Env             string         `json:"env"`
+	Status          string         `json:"status"`
+	Summary         string         `json:"summary"`
+	Fingerprint     string         `json:"fingerprint"`
+	Highlights      []string       `json:"highlights,omitempty"`
+	Open            bool           `json:"open"`
+	Acknowledged    bool           `json:"acknowledged"`
+	AcknowledgedBy  string         `json:"acknowledged_by,omitempty"`
+	AcknowledgedAt  time.Time      `json:"acknowledged_at,omitempty"`
+	Owner           string         `json:"owner,omitempty"`
+	Note            string         `json:"note,omitempty"`
+	FirstSeenAt     time.Time      `json:"first_seen_at,omitempty"`
+	LastSeenAt      time.Time      `json:"last_seen_at,omitempty"`
+	LastChangedAt   time.Time      `json:"last_changed_at,omitempty"`
+	ClosedAt        time.Time      `json:"closed_at,omitempty"`
+	UpdatedAt       time.Time      `json:"updated_at,omitempty"`
+	FailCount       int            `json:"fail_count"`
+	WarnCount       int            `json:"warn_count"`
+	SuppressedCount int            `json:"suppressed_count"`
+	External        *ExternalAlert `json:"external,omitempty"`
 }
 
 type Filter struct {
@@ -165,6 +166,7 @@ func syncRecord(prev Record, ok bool, report Report, now time.Time) Record {
 	next.Summary = strings.TrimSpace(report.Summary)
 	next.Fingerprint = strings.TrimSpace(report.Fingerprint)
 	next.Highlights = append([]string(nil), report.Highlights...)
+	next.External = cloneExternalAlert(report.External)
 	next.FailCount = report.FailCount
 	next.WarnCount = report.WarnCount
 	next.SuppressedCount = report.SuppressedCount
@@ -206,6 +208,26 @@ func syncRecord(prev Record, ok bool, report Report, now time.Time) Record {
 		next.LastChangedAt = now
 	}
 	return next
+}
+
+func cloneExternalAlert(v *ExternalAlert) *ExternalAlert {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	if len(v.Labels) > 0 {
+		out.Labels = make(map[string]string, len(v.Labels))
+		for key, value := range v.Labels {
+			out.Labels[key] = value
+		}
+	}
+	if len(v.Annotations) > 0 {
+		out.Annotations = make(map[string]string, len(v.Annotations))
+		for key, value := range v.Annotations {
+			out.Annotations[key] = value
+		}
+	}
+	return &out
 }
 
 func matchesFilter(rec Record, filter Filter) bool {

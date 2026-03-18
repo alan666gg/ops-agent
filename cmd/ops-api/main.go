@@ -48,6 +48,9 @@ type server struct {
 	incidentStore incident.Store
 	token         string
 	alertToken    string
+	alertAPIToken string
+	syncAlertAck  bool
+	alertSilence  time.Duration
 	approvalStore approvalBackend
 	metrics       *apiMetrics
 	limiter       *rateLimiter
@@ -83,6 +86,10 @@ type rateLimiter struct {
 }
 
 var newPrometheusHTTPClient = func(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout}
+}
+
+var newAlertmanagerHTTPClient = func(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
@@ -200,6 +207,9 @@ func main() {
 	notifyConfigFile := flag.String("notify-config", "", "notification routing config file (replaces direct notifier flags)")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	alertToken := flag.String("alert-token", os.Getenv("OPS_ALERT_TOKEN"), "dedicated bearer/shared token for /alerts/alertmanager (or OPS_ALERT_TOKEN env)")
+	alertAPIToken := flag.String("alertmanager-api-token", os.Getenv("OPS_ALERTMANAGER_API_TOKEN"), "optional bearer token used when syncing Alertmanager silences")
+	syncAlertAck := flag.Bool("alertmanager-sync-ack", false, "when true, acknowledging an Alertmanager-backed incident also creates a silence in Alertmanager")
+	alertSilence := flag.Duration("alertmanager-silence-duration", 2*time.Hour, "silence duration used when --alertmanager-sync-ack is enabled")
 	flag.Parse()
 	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
 		fmt.Println(err)
@@ -252,6 +262,9 @@ func main() {
 		incidentStore: incidentStore,
 		token:         strings.TrimSpace(*token),
 		alertToken:    strings.TrimSpace(*alertToken),
+		alertAPIToken: strings.TrimSpace(*alertAPIToken),
+		syncAlertAck:  *syncAlertAck,
+		alertSilence:  *alertSilence,
 		approvalStore: store,
 		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
 		notifyCtl: notify.NewController(notifierImpl, notify.NewSQLiteStore(*notifyStateFile), notify.ControllerOptions{
@@ -1168,6 +1181,13 @@ func (s *server) handleAckIncident(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: "incident_ack", Project: item.Project, Env: item.Env, Target: item.ID, Status: "ok", Message: defaultString(req.Note, "incident acknowledged")})
+	if silenceID, silenceErr := s.syncAlertmanagerSilence(r.Context(), item, req.Actor, req.Note); silenceErr != nil {
+		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: "alertmanager_silence", Project: item.Project, Env: item.Env, Target: item.ID, Status: "failed", Message: silenceErr.Error()})
+		item.Note = appendResponseNote(item.Note, "alertmanager_silence_failed="+silenceErr.Error())
+	} else if silenceID != "" {
+		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: "alertmanager_silence", Project: item.Project, Env: item.Env, Target: item.ID, Status: "ok", Message: "silence_id=" + silenceID})
+		item.Note = appendResponseNote(item.Note, "alertmanager_silence="+silenceID)
+	}
 	_ = json.NewEncoder(w).Encode(item)
 }
 
@@ -1354,6 +1374,38 @@ func shouldSuppressAcknowledged(rec incident.Record, report incident.Report) boo
 		return false
 	}
 	return strings.TrimSpace(rec.Fingerprint) == strings.TrimSpace(report.Fingerprint)
+}
+
+func (s *server) syncAlertmanagerSilence(ctx context.Context, item incident.Record, actor, note string) (string, error) {
+	if !s.syncAlertAck {
+		return "", nil
+	}
+	if item.External == nil || !strings.EqualFold(strings.TrimSpace(item.External.Provider), "alertmanager") {
+		return "", nil
+	}
+	comment := strings.TrimSpace(note)
+	if comment == "" {
+		comment = "acknowledged from ops-agent by " + strings.TrimSpace(actor)
+	}
+	client := alerting.AlertmanagerClient{
+		BaseURL:     strings.TrimSpace(item.External.ExternalURL),
+		BearerToken: s.alertAPIToken,
+		HTTPClient:  newAlertmanagerHTTPClient(10 * time.Second),
+	}
+	return client.CreateSilence(ctx, item.External, s.alertSilence, actor, comment)
+}
+
+func appendResponseNote(existing, extra string) string {
+	existing = strings.TrimSpace(existing)
+	extra = strings.TrimSpace(extra)
+	switch {
+	case existing == "":
+		return extra
+	case extra == "":
+		return existing
+	default:
+		return existing + " | " + extra
+	}
 }
 
 func prometheusClientForEnv(env config.Environment) (promapi.Client, time.Duration, error) {

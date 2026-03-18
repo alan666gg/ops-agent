@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ops-agent API
-  version: 0.3.3
+  version: 0.3.4
 servers:
   - url: http://127.0.0.1:8090
 components:
@@ -297,6 +297,7 @@ paths:
   /incidents/ack:
     post:
       summary: Acknowledge one incident
+      description: When the incident originated from Alertmanager and the API is started with alertmanager ack-sync enabled, this call also creates a matching Alertmanager silence.
       requestBody:
         required: true
         content:

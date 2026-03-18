@@ -7,7 +7,8 @@ Run:
 ```bash
 export OPS_API_TOKEN=change-me
 export OPS_ALERT_TOKEN=change-me-alerts
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2
+export OPS_ALERTMANAGER_API_TOKEN=change-me-alertmanager-api
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2 --alertmanager-sync-ack --alertmanager-silence-duration 2h
 ```
 
 Endpoints:
@@ -47,5 +48,6 @@ Acknowledged incidents suppress duplicate notify repeats until the fingerprint c
 `GET /incidents/timeline` correlates recent audit events around one incident and highlights likely change events, such as deploy/runbook actions shortly before the incident first appeared.
 `GET /prometheus/query` supports instant queries by default, or range queries when `minutes` is set. `step` is optional and defaults to an auto-selected resolution.
 For Alertmanager, use a dedicated `OPS_ALERT_TOKEN` so webhook senders do not need the broader operator API token.
+If `--alertmanager-sync-ack` is enabled, acknowledging an Alertmanager-backed incident also creates an Alertmanager silence for the alert's original labels. Use `OPS_ALERTMANAGER_API_TOKEN` when the Alertmanager API itself requires auth.
 `--notify-config` replaces direct notifier flags with a routed notification policy that supports named receivers, silences, and maintenance windows.
 `--notify-trigger-after` and `--notify-recovery-after` help suppress flapping by requiring consecutive unhealthy or healthy samples before opening or closing an incident.
