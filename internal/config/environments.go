@@ -29,6 +29,7 @@ type Host struct {
 
 type Service struct {
 	Name           string `yaml:"name"`
+	Host           string `yaml:"host,omitempty"`
 	Type           string `yaml:"type"`
 	ContainerName  string `yaml:"container_name"`
 	HealthcheckURL string `yaml:"healthcheck_url"`
@@ -100,6 +101,9 @@ func (e Environment) Validate(envName string) error {
 		if strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) == "" {
 			return fmt.Errorf("environment %q service %q of type container must define container_name", envName, svc.Name)
 		}
+		if ref := strings.TrimSpace(svc.Host); ref != "" && !hostNames[ref] {
+			return fmt.Errorf("environment %q service %q references unknown host %q", envName, svc.Name, ref)
+		}
 		if name := strings.TrimSpace(svc.ContainerName); name != "" {
 			if containerNames[name] {
 				return fmt.Errorf("environment %q has duplicate container_name %q", envName, name)
@@ -135,6 +139,16 @@ func (e Environment) Validate(envName string) error {
 func (e Environment) HostByName(name string) (Host, bool) {
 	for _, host := range e.Hosts {
 		if host.Name == strings.TrimSpace(name) {
+			return host, true
+		}
+	}
+	return Host{}, false
+}
+
+func (e Environment) HostByEndpoint(endpoint string) (Host, bool) {
+	needle := strings.TrimSpace(endpoint)
+	for _, host := range e.Hosts {
+		if strings.EqualFold(host.Name, needle) || strings.EqualFold(host.Host, needle) {
 			return host, true
 		}
 	}

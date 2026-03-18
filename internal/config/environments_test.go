@@ -56,6 +56,7 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
         ssh_port: 22
     services:
       - name: api
+        host: app-1
         type: container
         container_name: app-api
         healthcheck_url: http://127.0.0.1:8080/healthz
@@ -73,5 +74,28 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	}
 	if len(cfg.Environments) != 1 {
 		t.Fatalf("expected 1 environment, got %d", len(cfg.Environments))
+	}
+}
+
+func TestLoadEnvironmentsRejectsUnknownServiceHost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+    services:
+      - name: api
+        host: missing-host
+        healthcheck_url: http://10.0.0.5:8080/healthz
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadEnvironments(path)
+	if err == nil {
+		t.Fatal("expected unknown service host validation error")
 	}
 }

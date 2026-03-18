@@ -340,14 +340,8 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 	recentAutoActions, _ := audit.CountRecentAutoActions(s.auditFile, envName, time.Now().UTC().Add(-time.Hour))
 	report := incident.BuildReport("ops-api", envName, env, results, policyCfg, recentAutoActions)
 
-	status := "ok"
 	for _, rs := range results {
 		sev := string(rs.Severity)
-		if rs.Severity == checks.SeverityFail {
-			status = "fail"
-		} else if rs.Severity == checks.SeverityWarn && status != "fail" {
-			status = "warn"
-		}
 		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "health_run", Env: envName, Target: envName + "/" + rs.Name, Status: sev, Message: rs.Code + ": " + rs.Message})
 	}
 	if s.notifyCtl.Enabled() && truthy(r.URL.Query().Get("notify")) {
@@ -359,7 +353,14 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = json.NewEncoder(w).Encode(map[string]any{"env": envName, "status": status, "results": results, "suggestions": report.Suggestions, "summary": report.Summary})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"env":               envName,
+		"status":            report.Status,
+		"results":           results,
+		"suppressed_checks": report.SuppressedChecks,
+		"suggestions":       report.Suggestions,
+		"summary":           report.Summary,
+	})
 }
 
 func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {

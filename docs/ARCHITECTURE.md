@@ -11,6 +11,7 @@
 - Health incidents can be summarized into action suggestions and sent through webhook, Slack, or Telegram notifiers.
 - Notification state is persisted so duplicate incidents, flapping checks, and recoveries can be handled with consecutive-sample thresholds.
 - Routed notification config can suppress alerts with explicit silences or maintenance windows while still evaluating checks underneath.
+- Incident aggregation is topology-aware: host reachability failures can inhibit downstream service/dependency symptoms so operators see root cause first.
 
 Flow:
 1. detect issue

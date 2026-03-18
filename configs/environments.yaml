@@ -7,6 +7,7 @@ environments:
         ssh_port: 22
     services:
       - name: app
+        host: test-app-1
         type: container
         container_name: cicdtest-app
         healthcheck_url: http://127.0.0.1:8080/

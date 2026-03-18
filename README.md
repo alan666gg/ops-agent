@@ -14,7 +14,8 @@ Internal Ops Agent scaffold with policy-gated runbooks, approvals, and audit tra
 
 1. Fill `configs/environments.yaml`
 2. Review `configs/policies.yaml`
-3. Run health checks via runbooks
+3. Link services to hosts in `configs/environments.yaml` when you want root-cause suppression to treat host outages as the primary incident
+4. Run health checks via runbooks
 
 ## Go engine (initial)
 
@@ -46,6 +47,8 @@ The scheduler/API health pass now includes:
 - SSH reachability for each host declared under `environments.<env>.hosts`
 - service HTTP checks from `services[].healthcheck_url`
 - HTTP/TCP dependency checks from `dependencies[]`
+
+If a service is tied to a host with `services[].host`, the incident builder can suppress downstream service/dependency symptoms when that host is already down and focus notifications on the root cause.
 
 Worker (policy-gated runbook execution):
 
@@ -119,6 +122,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `GET /audit/tail` only reads `.jsonl` files inside the configured audit directory.
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
 - Environment health checks run concurrently while keeping a stable output order.
+- `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 
 ## Notifications
 
@@ -128,4 +132,4 @@ curl -s "http://127.0.0.1:8090/metrics"
 - Notification routes currently match on `env`, `source`, and `severity`, and support a default receiver fallback.
 - Active silences and maintenance windows suppress notifications without stopping health checks; if an issue survives the mute window, the controller will deliver it after the window ends.
 - `--notify-trigger-after` and `--notify-recovery-after` let you suppress flapping by requiring consecutive unhealthy or healthy cycles before opening or closing an incident.
-- Health responses now include `summary` and `suggestions` so callers can build their own incident workflow.
+- Health responses now include `summary`, `suggestions`, and `suppressed_checks` so callers can distinguish root causes from downstream symptoms.

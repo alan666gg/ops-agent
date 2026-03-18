@@ -28,6 +28,7 @@ OpenAPI draft: `docs/openapi.yaml`
 If `target_host` is provided, the API resolves that host from the selected environment and runs the runbook over SSH.
 
 `GET /health/run` includes local host basics, configured host SSH reachability, service health URLs, and dependency checks for the selected environment.
+If a service declares `host`, the response can suppress downstream service symptoms when that host is already the active root cause.
 If the API is started with notifier flags, `/health/run?...&notify=1` also sends the incident summary when the status is `warn` or `fail`.
 `--notify-config` replaces direct notifier flags with a routed notification policy that supports named receivers, silences, and maintenance windows.
 `--notify-trigger-after` and `--notify-recovery-after` help suppress flapping by requiring consecutive unhealthy or healthy samples before opening or closing an incident.

@@ -151,6 +151,9 @@ func TextMessage(report incident.Report) string {
 	for _, res := range report.WarningChecks {
 		lines = append(lines, fmt.Sprintf("- warn %s: %s", res.Name, res.Message))
 	}
+	for _, item := range report.SuppressedChecks {
+		lines = append(lines, fmt.Sprintf("- suppressed %s by %s: %s", item.Result.Name, item.SuppressedBy, item.Reason))
+	}
 	return strings.Join(lines, "\n")
 }
 

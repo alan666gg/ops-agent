@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/incident"
 )
 
@@ -43,6 +44,13 @@ func TestTextMessageIncludesSuggestions(t *testing.T) {
 		Suggestions: []incident.Suggestion{
 			{Action: "restart_container", Args: []string{"api-1"}, RequiresApproval: true},
 		},
+		SuppressedChecks: []incident.SuppressedCheck{
+			{
+				Result:       incidentCheck("service_api"),
+				SuppressedBy: "host_ssh_app_1",
+				Reason:       "service depends on host app-1 reachability",
+			},
+		},
 	}
 	text := TextMessage(report)
 	if text == "" {
@@ -52,6 +60,9 @@ func TestTextMessageIncludesSuggestions(t *testing.T) {
 		t.Fatalf("expected %q in text: %s", want, text)
 	}
 	if want := "approval_required"; !strings.Contains(text, want) {
+		t.Fatalf("expected %q in text: %s", want, text)
+	}
+	if want := "suppressed service_api by host_ssh_app_1"; !strings.Contains(text, want) {
 		t.Fatalf("expected %q in text: %s", want, text)
 	}
 }
@@ -69,4 +80,8 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+func incidentCheck(name string) checks.Result {
+	return checks.Result{Name: name}
 }
