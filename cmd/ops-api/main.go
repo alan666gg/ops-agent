@@ -38,7 +38,27 @@ type server struct {
 	token          string
 	allowedActions map[string]bool
 	approvalStore  approvalBackend
+	metrics        *apiMetrics
 	mu             sync.Mutex
+}
+
+type apiMetrics struct {
+	mu               sync.Mutex
+	requestsTotal    map[string]int64
+	errorsTotal      map[string]int64
+	durationMsTotal  map[string]float64
+	actionsTotal     map[string]int64
+	actionsFailTotal map[string]int64
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 type actionRequest struct {
@@ -104,6 +124,13 @@ func main() {
 		auditFile:     *auditFile,
 		token:         strings.TrimSpace(*token),
 		approvalStore: store,
+		metrics: &apiMetrics{
+			requestsTotal:    map[string]int64{},
+			errorsTotal:      map[string]int64{},
+			durationMsTotal:  map[string]float64{},
+			actionsTotal:     map[string]int64{},
+			actionsFailTotal: map[string]int64{},
+		},
 		allowedActions: map[string]bool{
 			"check_host_health":    true,
 			"check_service_health": true,
@@ -129,18 +156,23 @@ func main() {
 	mux.HandleFunc("/actions/list", s.handleListActions)
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "service": "ops-api"})
 	})
 
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: 200}
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path != "/ready" && !s.authorized(r) {
-			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": "unauthorized"})
+		if r.URL.Path != "/ready" && r.URL.Path != "/metrics" && !s.authorized(r) {
+			sw.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(sw).Encode(map[string]any{"error": "unauthorized"})
+			s.metricsRecord(r.URL.Path, sw.status, time.Since(start))
 			return
 		}
-		mux.ServeHTTP(w, r)
+		mux.ServeHTTP(sw, r)
+		s.metricsRecord(r.URL.Path, sw.status, time.Since(start))
 	})
 
 	fmt.Println("ops-api listening on", *addr)
@@ -273,6 +305,7 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := runAction(req.Action, req.Args, req.TimeoutS)
+	s.actionRecord(req.Action, res.Err == nil)
 	status := "ok"
 	message := "action executed"
 	if res.Err != nil {
@@ -331,6 +364,7 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 
 	if !requiresApproval {
 		res := runAction(req.Action, req.Args, req.TimeoutS)
+		s.actionRecord(req.Action, res.Err == nil)
 		newStatus := "executed"
 		result := strings.TrimSpace(res.Output)
 		if res.Err != nil {
@@ -390,6 +424,7 @@ func (s *server) handleApproveAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := runAction(entry.Action, entry.Args, req.TimeoutS)
+	s.actionRecord(entry.Action, res.Err == nil)
 	finalStatus := "executed"
 	result := strings.TrimSpace(res.Output)
 	if res.Err != nil {
@@ -564,6 +599,60 @@ func (s *server) handleIncidentSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	topTargets := topN(targetCount, 5)
 	_ = json.NewEncoder(w).Encode(incidentSummary{WindowMinutes: window, Total: total, ByStatus: byStatus, TopTargets: topTargets})
+}
+
+func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	s.metrics.mu.Lock()
+	defer s.metrics.mu.Unlock()
+	fmt.Fprintln(w, "# HELP ops_api_requests_total Total HTTP requests by path")
+	fmt.Fprintln(w, "# TYPE ops_api_requests_total counter")
+	for k, v := range s.metrics.requestsTotal {
+		fmt.Fprintf(w, "ops_api_requests_total{path=%q} %d\n", k, v)
+	}
+	fmt.Fprintln(w, "# HELP ops_api_errors_total Total HTTP 5xx and 4xx responses by path")
+	fmt.Fprintln(w, "# TYPE ops_api_errors_total counter")
+	for k, v := range s.metrics.errorsTotal {
+		fmt.Fprintf(w, "ops_api_errors_total{path=%q} %d\n", k, v)
+	}
+	fmt.Fprintln(w, "# HELP ops_api_request_duration_ms_total Total request duration in milliseconds by path")
+	fmt.Fprintln(w, "# TYPE ops_api_request_duration_ms_total counter")
+	for k, v := range s.metrics.durationMsTotal {
+		fmt.Fprintf(w, "ops_api_request_duration_ms_total{path=%q} %.3f\n", k, v)
+	}
+	fmt.Fprintln(w, "# HELP ops_api_actions_total Total action executions by action")
+	fmt.Fprintln(w, "# TYPE ops_api_actions_total counter")
+	for k, v := range s.metrics.actionsTotal {
+		fmt.Fprintf(w, "ops_api_actions_total{action=%q} %d\n", k, v)
+	}
+	fmt.Fprintln(w, "# HELP ops_api_action_failures_total Total failed action executions by action")
+	fmt.Fprintln(w, "# TYPE ops_api_action_failures_total counter")
+	for k, v := range s.metrics.actionsFailTotal {
+		fmt.Fprintf(w, "ops_api_action_failures_total{action=%q} %d\n", k, v)
+	}
+}
+
+func (s *server) metricsRecord(path string, status int, d time.Duration) {
+	s.metrics.mu.Lock()
+	defer s.metrics.mu.Unlock()
+	s.metrics.requestsTotal[path]++
+	if status >= 400 {
+		s.metrics.errorsTotal[path]++
+	}
+	s.metrics.durationMsTotal[path] += float64(d.Milliseconds())
+}
+
+func (s *server) actionRecord(action string, ok bool) {
+	s.metrics.mu.Lock()
+	defer s.metrics.mu.Unlock()
+	s.metrics.actionsTotal[action]++
+	if !ok {
+		s.metrics.actionsFailTotal[action]++
+	}
 }
 
 func (s *server) validateActionRequest(req actionRequest) error {

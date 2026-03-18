@@ -20,6 +20,13 @@ paths:
       responses:
         '200':
           description: OK
+  /metrics:
+    get:
+      security: []
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Metrics text
   /health/run:
     get:
       summary: Run health checks for an environment

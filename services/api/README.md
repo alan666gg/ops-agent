@@ -12,6 +12,7 @@ go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy 
 Endpoints:
 
 - `GET /ready` (no token)
+- `GET /metrics` (no token, Prometheus text format)
 - `GET /health/run?env=test` (Bearer token)
 - `POST /actions/run` (Bearer token; direct mode)
 - `POST /actions/request` (Bearer token; creates approval ticket)
