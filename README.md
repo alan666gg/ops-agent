@@ -93,6 +93,8 @@ Telegram commands:
 /health prod
 /incidents 60
 /pending
+/requests pending
+/show <request_id>
 /request prod restart_container --target-host=app-1 cicdtest-app
 /approve <request_id>
 /reject <request_id> optional reason
@@ -178,8 +180,10 @@ curl -s "http://127.0.0.1:8090/metrics"
 
 - `cmd/ops-telegram` is a thin Telegram front-end over `ops-api`; it does not execute runbooks directly.
 - Slash commands and approval buttons always work without any LLM.
+- `/pending` now includes `View / Approve / Reject` inline buttons, and high-risk LLM actions expose `Confirm / Cancel` buttons as a safer alternative to free-text confirmation.
 - If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.
 - The LLM is a planner only: it can read health/incidents/pending requests and submit approve/reject/request actions through `ops-api`, so policy, approval, audit, and execution still stay in `ops-api` + `ops-worker`.
+- `/requests [status]` and `/show <request_id>` make request detail lookup explicit, so operators and the LLM can inspect a concrete request before approving or rejecting it.
 - State-changing natural-language operations now require a second confirmation step. The bot stores one pending confirmation per Telegram actor and only executes after the same actor replies `确认执行`; replying `取消` drops it.
 - `/reset` clears the stored LLM conversation state, and slash commands or approval buttons also reset that state to avoid stale context.
 - LLM tool calls and confirmation decisions are written to the Telegram audit file so model-driven actions can be traced separately from `ops-api`.

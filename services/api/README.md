@@ -17,6 +17,7 @@ Endpoints:
 - `POST /actions/run` (Bearer token; direct mode; request body supports `env` and optional `target_host`)
 - `POST /actions/request` (Bearer token; creates approval ticket; request body supports `env` and optional `target_host`)
 - `GET /actions/pending` (Bearer token)
+- `GET /actions/get?id=<request_id>` (Bearer token)
 - `GET /actions/list?status=pending|executed|failed|denied|expired` (Bearer token)
 - `POST /actions/approve` (Bearer token)
 - `POST /actions/reject` (Bearer token)

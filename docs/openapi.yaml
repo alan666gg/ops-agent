@@ -74,6 +74,16 @@ paths:
       summary: List pending approval requests
       responses:
         '200': { description: Pending list }
+  /actions/get:
+    get:
+      summary: Get one action request by request_id
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Action detail }
   /actions/approve:
     post:
       summary: Approve and execute a pending request

@@ -132,7 +132,11 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent cha
 		if strings.TrimSpace(reply) == "" {
 			reply = "我这边没有拿到可展示的结果，你可以换个问法，或者先用 /help 看看命令。"
 		}
-		return tg.SendMessage(ctx, msg.Chat.ID, reply, nil)
+		var markup any
+		if agent.HasPendingConfirmation(actor) {
+			markup = chatops.ConfirmationMarkup()
+		}
+		return tg.SendMessage(ctx, msg.Chat.ID, reply, markup)
 	case update.CallbackQuery != nil:
 		cb := update.CallbackQuery
 		if cb.Message.Chat.ID != allowedChatID {
@@ -145,16 +149,16 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent cha
 			_ = tg.AnswerCallbackQuery(context.Background(), cb.ID, trimCallback(err.Error()))
 			return tg.SendMessage(context.Background(), cb.Message.Chat.ID, "callback denied: "+err.Error(), nil)
 		}
-		if agent.Enabled() {
+		if agent.Enabled() && cb.Data != "llm_confirm" && cb.Data != "llm_cancel" {
 			_ = agent.ResetActor(actor)
 		}
-		reply, err := handleCallback(context.Background(), api, cb.Data, actor, approveTimeout)
+		reply, markup, err := handleCallback(context.Background(), api, agent, cb.Data, actor, approveTimeout)
 		if err != nil {
 			_ = tg.AnswerCallbackQuery(context.Background(), cb.ID, trimCallback(err.Error()))
 			return tg.SendMessage(context.Background(), cb.Message.Chat.ID, "callback failed: "+err.Error(), nil)
 		}
 		_ = tg.AnswerCallbackQuery(context.Background(), cb.ID, trimCallback(reply))
-		return tg.SendMessage(context.Background(), cb.Message.Chat.ID, reply, nil)
+		return tg.SendMessage(context.Background(), cb.Message.Chat.ID, reply, markup)
 	default:
 		return nil
 	}
@@ -214,6 +218,18 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, cmd chatops.C
 			return "pending query failed: " + err.Error(), nil
 		}
 		return chatops.FormatPending(resp), chatops.PendingMarkup(resp.Items)
+	case "requests":
+		resp, err := api.ListActions(ctx, cmd.Status, 10, "")
+		if err != nil {
+			return "actions query failed: " + err.Error(), nil
+		}
+		return chatops.FormatActionList(resp), nil
+	case "show":
+		item, err := api.GetAction(ctx, cmd.RequestID)
+		if err != nil {
+			return "show request failed: " + err.Error(), nil
+		}
+		return chatops.FormatActionDetail(item), chatops.ActionMarkup(item)
 	case "approve":
 		resp, err := api.Approve(ctx, cmd.RequestID, actor, approveTimeout)
 		if err != nil {
@@ -243,24 +259,37 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, cmd chatops.C
 	}
 }
 
-func handleCallback(ctx context.Context, api chatops.OpsAPIClient, data, actor string, approveTimeout int) (string, error) {
+func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops.Agent, data, actor string, approveTimeout int) (string, any, error) {
 	switch {
+	case data == "llm_confirm":
+		reply, _, err := agent.HandleConfirmation(ctx, "确认执行", actor)
+		return reply, nil, err
+	case data == "llm_cancel":
+		reply, _, err := agent.HandleConfirmation(ctx, "取消", actor)
+		return reply, nil, err
+	case strings.HasPrefix(data, "show:"):
+		id := strings.TrimPrefix(data, "show:")
+		item, err := api.GetAction(ctx, id)
+		if err != nil {
+			return "", nil, err
+		}
+		return chatops.FormatActionDetail(item), chatops.ActionMarkup(item), nil
 	case strings.HasPrefix(data, "approve:"):
 		id := strings.TrimPrefix(data, "approve:")
 		resp, err := api.Approve(ctx, id, actor, approveTimeout)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
-		return fmt.Sprintf("approved %s\nstatus=%s", id, resp.Status), nil
+		return fmt.Sprintf("approved %s\nstatus=%s", id, resp.Status), nil, nil
 	case strings.HasPrefix(data, "reject:"):
 		id := strings.TrimPrefix(data, "reject:")
 		resp, err := api.Reject(ctx, id, actor, "rejected from telegram button")
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
-		return fmt.Sprintf("rejected %s\nstatus=%s", id, resp.Status), nil
+		return fmt.Sprintf("rejected %s\nstatus=%s", id, resp.Status), nil, nil
 	default:
-		return "", fmt.Errorf("unsupported callback")
+		return "", nil, fmt.Errorf("unsupported callback")
 	}
 }
 

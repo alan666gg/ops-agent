@@ -212,6 +212,7 @@ func PendingMarkup(items []approval.Request) any {
 			break
 		}
 		rows = append(rows, []inlineButton{
+			{Text: "View " + item.ID, CallbackData: "show:" + item.ID},
 			{Text: "Approve " + item.ID, CallbackData: "approve:" + item.ID},
 			{Text: "Reject " + item.ID, CallbackData: "reject:" + item.ID},
 		})
@@ -220,4 +221,27 @@ func PendingMarkup(items []approval.Request) any {
 		return nil
 	}
 	return replyMarkup{InlineKeyboard: rows}
+}
+
+func ActionMarkup(item approval.Request) any {
+	switch item.Status {
+	case "pending":
+		return replyMarkup{InlineKeyboard: [][]inlineButton{
+			{
+				{Text: "Approve " + item.ID, CallbackData: "approve:" + item.ID},
+				{Text: "Reject " + item.ID, CallbackData: "reject:" + item.ID},
+			},
+		}}
+	default:
+		return nil
+	}
+}
+
+func ConfirmationMarkup() any {
+	return replyMarkup{InlineKeyboard: [][]inlineButton{
+		{
+			{Text: "Confirm", CallbackData: "llm_confirm"},
+			{Text: "Cancel", CallbackData: "llm_cancel"},
+		},
+	}}
 }

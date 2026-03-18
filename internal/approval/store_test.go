@@ -32,6 +32,13 @@ func TestJSONStoreLifecycle(t *testing.T) {
 	if len(items) != 1 || items[0].Status != "approved" {
 		t.Fatalf("unexpected approved: %+v", items)
 	}
+	item, err := s.GetByID("r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.ID != "r1" || item.Status != "approved" {
+		t.Fatalf("unexpected item: %+v", item)
+	}
 }
 
 func TestSQLiteStoreExpirePending(t *testing.T) {

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"testing"
+
+	"github.com/alan666gg/ops-agent/internal/approval"
 )
 
 func TestOpsAPIClientHealthAndApprove(t *testing.T) {
@@ -17,6 +19,10 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 		switch r.URL.Path {
 		case "/health/run":
 			return jsonResponse(http.StatusOK, HealthResponse{Env: "prod", Status: "fail", Summary: "bad"}), nil
+		case "/actions/get":
+			return jsonResponse(http.StatusOK, approval.Request{ID: "r1", Action: "restart_container", Status: "pending"}), nil
+		case "/actions/list":
+			return jsonResponse(http.StatusOK, ActionListResponse{Status: "pending", Count: 1, Items: []approval.Request{{ID: "r1", Action: "restart_container", Status: "pending"}}}), nil
 		case "/actions/approve":
 			if err := json.NewDecoder(r.Body).Decode(&approveBody); err != nil {
 				t.Fatal(err)
@@ -34,6 +40,20 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 	}
 	if health.Env != "prod" || health.Status != "fail" {
 		t.Fatalf("unexpected health response: %+v", health)
+	}
+	item, err := api.GetAction(context.Background(), "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.ID != "r1" || item.Action != "restart_container" {
+		t.Fatalf("unexpected action response: %+v", item)
+	}
+	list, err := api.ListActions(context.Background(), "pending", 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.Count != 1 || len(list.Items) != 1 || list.Items[0].ID != "r1" {
+		t.Fatalf("unexpected list response: %+v", list)
 	}
 
 	resp, err := api.Approve(context.Background(), "r1", "tg:@ops", 30)

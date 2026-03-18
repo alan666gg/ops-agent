@@ -31,6 +31,7 @@ import (
 type approvalBackend interface {
 	Create(r approval.Request) error
 	Update(id string, update func(*approval.Request) error) (approval.Request, error)
+	GetByID(id string) (approval.Request, error)
 	ListPending(limit int) ([]approval.Request, error)
 	ListByStatus(status string, limit int) ([]approval.Request, error)
 	ExpirePendingOlderThan(ttl time.Duration) (int64, error)
@@ -248,6 +249,7 @@ func main() {
 	mux.HandleFunc("/actions/approve", s.handleApproveAction)
 	mux.HandleFunc("/actions/reject", s.handleRejectAction)
 	mux.HandleFunc("/actions/pending", s.handlePendingActions)
+	mux.HandleFunc("/actions/get", s.handleGetAction)
 	mux.HandleFunc("/actions/list", s.handleListActions)
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
@@ -680,6 +682,26 @@ func (s *server) handlePendingActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(items), "items": items})
+}
+
+func (s *server) handleGetAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	item, err := s.approvalStore.GetByID(id)
+	s.mu.Unlock()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(item)
 }
 
 func (s *server) handleListActions(w http.ResponseWriter, r *http.Request) {

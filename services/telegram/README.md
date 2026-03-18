@@ -33,6 +33,8 @@ Supported commands:
 - `/health <env>`
 - `/incidents [minutes]`
 - `/pending`
+- `/requests [status]`
+- `/show <request_id>`
 - `/request <env> <action> [--target-host=name] [args...]`
 - `/approve <request_id>`
 - `/reject <request_id> [reason]`
@@ -45,3 +47,9 @@ Natural-language examples:
 - `把刚才那个审批通过`
 - `确认执行`
 - `取消`
+
+Interaction notes:
+
+- `/pending` now renders `View / Approve / Reject` buttons for each visible request
+- High-risk LLM-created operations render `Confirm / Cancel` buttons backed by the same pending confirmation store as the text replies
+- `/show <request_id>` returns one request's full detail and, if it is still pending, renders approve/reject buttons for that exact request

@@ -14,6 +14,7 @@ type Command struct {
 	Env        string
 	Minutes    int
 	RequestID  string
+	Status     string
 	Action     string
 	TargetHost string
 	Args       []string
@@ -33,6 +34,18 @@ func ParseCommand(text string) (Command, error) {
 
 	switch out.Name {
 	case "start", "help", "pending", "reset":
+		return out, nil
+	case "show":
+		if len(fields) < 2 {
+			return Command{}, fmt.Errorf("usage: /show <request_id>")
+		}
+		out.RequestID = fields[1]
+		return out, nil
+	case "requests":
+		out.Status = "pending"
+		if len(fields) > 1 {
+			out.Status = strings.ToLower(strings.TrimSpace(fields[1]))
+		}
 		return out, nil
 	case "health":
 		if len(fields) > 1 {
@@ -95,6 +108,8 @@ func HelpText() string {
 		"/health <env>",
 		"/incidents [minutes]",
 		"/pending",
+		"/requests [status]",
+		"/show <request_id>",
 		"/request <env> <action> [--target-host=name] [args...]",
 		"/approve <request_id>",
 		"/reject <request_id> [reason]",
@@ -179,6 +194,49 @@ func FormatPending(resp PendingResponse) string {
 			break
 		}
 		lines = append(lines, FormatPendingItem(item))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatActionList(resp ActionListResponse) string {
+	if len(resp.Items) == 0 {
+		return "no actions found"
+	}
+	lines := []string{fmt.Sprintf("actions status=%s count=%d", defaultString(resp.Status, "pending"), resp.Count)}
+	for i, item := range resp.Items {
+		if i >= 10 {
+			lines = append(lines, fmt.Sprintf("... and %d more", len(resp.Items)-i))
+			break
+		}
+		lines = append(lines, FormatPendingItem(item))
+	}
+	if strings.TrimSpace(resp.NextCursor) != "" {
+		lines = append(lines, "next_cursor="+resp.NextCursor)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatActionDetail(item approval.Request) string {
+	lines := []string{
+		fmt.Sprintf("request %s", item.ID),
+		fmt.Sprintf("- status=%s", item.Status),
+		fmt.Sprintf("- action=%s", item.Action),
+		fmt.Sprintf("- env=%s", defaultString(item.Env, "test")),
+	}
+	if item.TargetHost != "" {
+		lines = append(lines, "- target="+item.TargetHost)
+	}
+	if len(item.Args) > 0 {
+		lines = append(lines, "- args="+strings.Join(item.Args, ","))
+	}
+	if item.Actor != "" {
+		lines = append(lines, "- actor="+item.Actor)
+	}
+	if item.Approver != "" {
+		lines = append(lines, "- approver="+item.Approver)
+	}
+	if strings.TrimSpace(item.Result) != "" {
+		lines = append(lines, "- result="+trimForChat(item.Result, 200))
 	}
 	return strings.Join(lines, "\n")
 }

@@ -36,6 +36,14 @@ func TestParseCommandHealthAndRequest(t *testing.T) {
 	if cmd.Name != "reset" {
 		t.Fatalf("unexpected reset command: %+v", cmd)
 	}
+
+	cmd, err = ParseCommand("/show r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "show" || cmd.RequestID != "r1" {
+		t.Fatalf("unexpected show command: %+v", cmd)
+	}
 }
 
 func TestParseCommandRejectRequiresRequestID(t *testing.T) {
@@ -74,5 +82,22 @@ func TestFormatPending(t *testing.T) {
 	})
 	if !strings.Contains(text, "r1 restart_container env=prod") {
 		t.Fatalf("unexpected pending text: %s", text)
+	}
+}
+
+func TestFormatActionDetail(t *testing.T) {
+	text := FormatActionDetail(approval.Request{
+		ID:         "r1",
+		Status:     "pending",
+		Action:     "restart_container",
+		Env:        "prod",
+		TargetHost: "app-1",
+		Args:       []string{"api-1"},
+		Actor:      "tg:@ops",
+	})
+	for _, want := range []string{"request r1", "status=pending", "target=app-1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
 	}
 }

@@ -173,6 +173,11 @@ func (a Agent) HandleConfirmation(ctx context.Context, userInput, actor string) 
 	return reply, true, nil
 }
 
+func (a Agent) HasPendingConfirmation(actor string) bool {
+	_, ok, err := a.loadPendingConfirmation(actor)
+	return err == nil && ok
+}
+
 func (a Agent) runWithState(ctx context.Context, userInput, actor, previous string) (string, string, error) {
 	maxRounds := a.MaxToolRounds
 	if maxRounds <= 0 {
@@ -275,6 +280,35 @@ func (a Agent) toolSchemas() []responseTool {
 					"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
 				},
 				"required":             []string{"limit"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "list_actions",
+			Description: "List recent action requests for one status, such as pending, approved, executed, failed, denied, or expired.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"status": map[string]any{"type": "string"},
+					"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+				},
+				"required":             []string{"status", "limit"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "get_action",
+			Description: "Get the full detail of one action request by request_id.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"request_id": map[string]any{"type": "string"},
+				},
+				"required":             []string{"request_id"},
 				"additionalProperties": false,
 			},
 		},
@@ -390,6 +424,12 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 	case "list_pending":
 		data, err := a.OpsAPI.Pending(ctx, intFromAny(args["limit"], 10))
 		return data, "", "", err
+	case "list_actions":
+		data, err := a.OpsAPI.ListActions(ctx, stringFromAny(args["status"]), intFromAny(args["limit"], 10), "")
+		return data, "", "", err
+	case "get_action":
+		data, err := a.OpsAPI.GetAction(ctx, stringFromAny(args["request_id"]))
+		return data, data.Env, data.TargetHost, err
 	case "request_action":
 		env := stringFromAny(args["env"])
 		targetHost := stringFromAny(args["target_host"])
@@ -429,6 +469,7 @@ func (a Agent) prompt() string {
 	b.WriteString("Respond in the user's language, defaulting to Chinese.\n")
 	b.WriteString("Use tools whenever the user asks about health, incidents, pending approvals, or actions.\n")
 	b.WriteString("Never invent request IDs, environments, host names, or action names.\n")
+	b.WriteString("Before approving or rejecting an ambiguous request, prefer listing or fetching request details first.\n")
 	b.WriteString("Only approve_action or reject_action when the user explicitly asks to approve or reject.\n")
 	b.WriteString("When the user asks to run an operation, prefer request_action so policy and approval stay enforced.\n")
 	b.WriteString("If a tool result says confirmation_required, do not call more tools. Ask the user to reply exactly with 确认执行 or 取消.\n")

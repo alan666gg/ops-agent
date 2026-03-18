@@ -85,6 +85,19 @@ func (s Store) Update(id string, update func(*Request) error) (Request, error) {
 	return Request{}, fmt.Errorf("request not found: %s", id)
 }
 
+func (s Store) GetByID(id string) (Request, error) {
+	items, err := s.load()
+	if err != nil {
+		return Request{}, err
+	}
+	for _, item := range items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return Request{}, fmt.Errorf("request not found: %s", id)
+}
+
 func (s Store) ListPending(limit int) ([]Request, error) {
 	return s.ListByStatus("pending", limit)
 }

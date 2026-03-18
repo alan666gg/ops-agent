@@ -106,6 +106,15 @@ WHERE id=?
 	return r, nil
 }
 
+func (s SQLiteStore) GetByID(id string) (Request, error) {
+	db, err := s.open()
+	if err != nil {
+		return Request{}, err
+	}
+	defer db.Close()
+	return s.getByID(db, id)
+}
+
 func (s SQLiteStore) ListPending(limit int) ([]Request, error) {
 	return s.ListByStatus("pending", limit)
 }

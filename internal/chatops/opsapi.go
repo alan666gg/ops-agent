@@ -43,6 +43,13 @@ type PendingResponse struct {
 	Items []approval.Request `json:"items"`
 }
 
+type ActionListResponse struct {
+	Status     string             `json:"status"`
+	Count      int                `json:"count"`
+	Items      []approval.Request `json:"items"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+}
+
 type RequestActionRequest struct {
 	Action     string   `json:"action"`
 	Env        string   `json:"env,omitempty"`
@@ -89,6 +96,30 @@ func (c OpsAPIClient) Pending(ctx context.Context, limit int) (PendingResponse, 
 	q := url.Values{}
 	q.Set("limit", fmt.Sprintf("%d", limit))
 	if err := c.doJSON(ctx, http.MethodGet, "/actions/pending?"+q.Encode(), nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c OpsAPIClient) GetAction(ctx context.Context, id string) (approval.Request, error) {
+	var out approval.Request
+	q := url.Values{}
+	q.Set("id", strings.TrimSpace(id))
+	if err := c.doJSON(ctx, http.MethodGet, "/actions/get?"+q.Encode(), nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c OpsAPIClient) ListActions(ctx context.Context, status string, limit int, cursor string) (ActionListResponse, error) {
+	var out ActionListResponse
+	q := url.Values{}
+	q.Set("status", strings.TrimSpace(status))
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	if strings.TrimSpace(cursor) != "" {
+		q.Set("cursor", strings.TrimSpace(cursor))
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/actions/list?"+q.Encode(), nil, &out); err != nil {
 		return out, err
 	}
 	return out, nil

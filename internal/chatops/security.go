@@ -139,7 +139,7 @@ func (a Authorizer) AuthorizeInput(actor, input string) error {
 
 func (a Authorizer) AuthorizeCommand(actor string, cmd Command) error {
 	switch cmd.Name {
-	case "start", "help", "reset", "health", "incidents", "pending":
+	case "start", "help", "reset", "health", "incidents", "pending", "requests", "show":
 		_, err := a.requireRole(actor, roleViewer)
 		return err
 	case "request":
@@ -161,6 +161,9 @@ func (a Authorizer) AuthorizeCallback(actor, data string) error {
 	case strings.HasPrefix(data, "approve:"), strings.HasPrefix(data, "reject:"):
 		_, err := a.requireRole(actor, roleApprover)
 		return err
+	case strings.HasPrefix(data, "show:"), data == "llm_confirm", data == "llm_cancel":
+		_, err := a.user(actor)
+		return err
 	default:
 		return fmt.Errorf("unsupported callback")
 	}
@@ -168,7 +171,7 @@ func (a Authorizer) AuthorizeCallback(actor, data string) error {
 
 func (a Authorizer) AuthorizeTool(actor, toolName string, args map[string]any) error {
 	switch toolName {
-	case "get_health", "get_incident_summary", "list_pending":
+	case "get_health", "get_incident_summary", "list_pending", "list_actions", "get_action":
 		_, err := a.requireRole(actor, roleViewer)
 		return err
 	case "request_action":

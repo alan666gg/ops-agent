@@ -7,6 +7,7 @@
 - Telegram can optionally add an OpenAI Responses API tool-calling layer for natural-language requests, but the model still acts only through `ops-api`.
 - Natural-language state-changing actions use a second confirmation step and per-actor state files so one operator's LLM context or pending confirmation does not leak into another's.
 - Telegram RBAC and prompt-injection guards now sit in front of both slash commands and LLM tool calls, so actor authorization is enforced before the control plane sees a mutating request.
+- Telegram request handling now has an explicit detail layer: operators can fetch one request by id before approving, and both pending approvals and LLM confirmations expose inline buttons to reduce ambiguous free-text actions.
 - All actions are audited.
 - Action definitions are centralized in a shared registry.
 - Runbooks execute locally by default and can be sent over SSH to a configured environment host.
