@@ -1,7 +1,11 @@
 package config
 
 import (
+	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -42,5 +46,115 @@ func LoadEnvironments(path string) (EnvironmentFile, error) {
 	if out.Environments == nil {
 		out.Environments = map[string]Environment{}
 	}
+	if err := out.Validate(); err != nil {
+		return out, err
+	}
 	return out, nil
+}
+
+func (f EnvironmentFile) Validate() error {
+	for envName, env := range f.Environments {
+		if strings.TrimSpace(envName) == "" {
+			return fmt.Errorf("environment name must not be empty")
+		}
+		if err := env.Validate(envName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e Environment) Validate(envName string) error {
+	hostNames := map[string]bool{}
+	for _, host := range e.Hosts {
+		if strings.TrimSpace(host.Name) == "" {
+			return fmt.Errorf("environment %q has host with empty name", envName)
+		}
+		if hostNames[host.Name] {
+			return fmt.Errorf("environment %q has duplicate host name %q", envName, host.Name)
+		}
+		hostNames[host.Name] = true
+		if strings.TrimSpace(host.Host) == "" {
+			return fmt.Errorf("environment %q host %q must define host", envName, host.Name)
+		}
+		if host.SSHPort < 0 || host.SSHPort > 65535 {
+			return fmt.Errorf("environment %q host %q has invalid ssh_port %d", envName, host.Name, host.SSHPort)
+		}
+	}
+
+	serviceNames := map[string]bool{}
+	containerNames := map[string]bool{}
+	for _, svc := range e.Services {
+		if strings.TrimSpace(svc.Name) == "" {
+			return fmt.Errorf("environment %q has service with empty name", envName)
+		}
+		if serviceNames[svc.Name] {
+			return fmt.Errorf("environment %q has duplicate service name %q", envName, svc.Name)
+		}
+		serviceNames[svc.Name] = true
+		if strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) == "" {
+			return fmt.Errorf("environment %q service %q of type container must define container_name", envName, svc.Name)
+		}
+		if name := strings.TrimSpace(svc.ContainerName); name != "" {
+			if containerNames[name] {
+				return fmt.Errorf("environment %q has duplicate container_name %q", envName, name)
+			}
+			containerNames[name] = true
+		}
+		if rawURL := strings.TrimSpace(svc.HealthcheckURL); rawURL != "" {
+			parsed, err := url.Parse(rawURL)
+			if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+				return fmt.Errorf("environment %q service %q has invalid healthcheck_url %q", envName, svc.Name, rawURL)
+			}
+		}
+	}
+
+	seenDeps := map[string]bool{}
+	for _, dep := range e.Dependencies {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			return fmt.Errorf("environment %q has empty dependency entry", envName)
+		}
+		if seenDeps[dep] {
+			return fmt.Errorf("environment %q has duplicate dependency %q", envName, dep)
+		}
+		seenDeps[dep] = true
+		if err := validateDependency(dep); err != nil {
+			return fmt.Errorf("environment %q dependency %q invalid: %w", envName, dep, err)
+		}
+	}
+
+	return nil
+}
+
+func validateDependency(dep string) error {
+	switch {
+	case strings.HasPrefix(dep, "tcp://"):
+		parsed, err := url.Parse(dep)
+		if err != nil {
+			return err
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("missing host")
+		}
+		host, port, err := net.SplitHostPort(parsed.Host)
+		if err != nil {
+			return fmt.Errorf("expected host:port")
+		}
+		if strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return fmt.Errorf("expected host:port")
+		}
+		return nil
+	case strings.HasPrefix(dep, "http://"), strings.HasPrefix(dep, "https://"):
+		parsed, err := url.Parse(dep)
+		if err != nil {
+			return err
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("missing host")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported dependency scheme")
+	}
 }

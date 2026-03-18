@@ -28,6 +28,12 @@ Policy evaluation + audit:
 go run ./cmd/ops-agent policy --action restart_container --env prod --policy configs/policies.yaml --audit audit/events.jsonl
 ```
 
+Config validation:
+
+```bash
+go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy configs/policies.yaml
+```
+
 Scheduler (periodic health checks):
 
 ```bash

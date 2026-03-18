@@ -11,6 +11,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/actions"
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/checks"
+	"github.com/alan666gg/ops-agent/internal/config"
 	"github.com/alan666gg/ops-agent/internal/policy"
 )
 
@@ -25,6 +26,8 @@ func main() {
 		runHealth(os.Args[2:])
 	case "policy":
 		runPolicy(os.Args[2:])
+	case "validate":
+		runValidate(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -35,6 +38,7 @@ func usage() {
 	fmt.Println("ops-agent commands:")
 	fmt.Println("  health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1:6379")
 	fmt.Println("  policy --action <" + strings.Join(actions.Names(), "|") + "> --env test --policy configs/policies.yaml --audit audit.jsonl")
+	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml")
 }
 
 func runHealth(args []string) {
@@ -121,6 +125,30 @@ func runPolicy(args []string) {
 	if status != "allowed" {
 		os.Exit(3)
 	}
+}
+
+func runValidate(args []string) {
+	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+	envFile := fs.String("env-file", "configs/environments.yaml", "environment config file")
+	policyFile := fs.String("policy", "configs/policies.yaml", "policy file")
+	_ = fs.Parse(args)
+
+	envCfg, err := config.LoadEnvironments(*envFile)
+	if err != nil {
+		fmt.Println("environment config invalid:", err)
+		os.Exit(1)
+	}
+	policyCfg, err := policy.Load(*policyFile)
+	if err != nil {
+		fmt.Println("policy config invalid:", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("environment config valid: %d environments\n", len(envCfg.Environments))
+	fmt.Printf("policy config valid: %d allowed, %d approval-required actions\n",
+		len(policyCfg.Policies.AutoActions.Allowed),
+		len(policyCfg.Policies.AutoActions.RequireApproval),
+	)
 }
 
 func splitCSV(s string) []string {
