@@ -3,3 +3,4 @@
 *.tmp
 secrets/
 __pycache__/
+audit/*.jsonl

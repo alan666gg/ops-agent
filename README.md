@@ -34,3 +34,13 @@ Scheduler (periodic health checks):
 go run ./cmd/ops-scheduler --env test --env-file configs/environments.yaml --audit audit/scheduler.jsonl --once
 ```
 
+Worker (policy-gated runbook execution):
+
+```bash
+# low-risk action (allowed)
+go run ./cmd/ops-worker --action check_host_health --policy configs/policies.yaml --audit audit/worker.jsonl
+
+# action requiring approval
+go run ./cmd/ops-worker --action restart_container --args cicdtest-app --policy configs/policies.yaml --audit audit/worker.jsonl --approved
+```
+
