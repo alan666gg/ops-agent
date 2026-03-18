@@ -10,6 +10,7 @@ import (
 
 	"github.com/alan666gg/ops-agent/internal/actions"
 	"github.com/alan666gg/ops-agent/internal/audit"
+	"github.com/alan666gg/ops-agent/internal/chatops"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
 	"github.com/alan666gg/ops-agent/internal/notify"
@@ -39,7 +40,7 @@ func usage() {
 	fmt.Println("ops-agent commands:")
 	fmt.Println("  health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1:6379")
 	fmt.Println("  policy --action <" + strings.Join(actions.Names(), "|") + "> --env test --policy configs/policies.yaml --audit audit.jsonl")
-	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml")
+	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml")
 }
 
 func runHealth(args []string) {
@@ -133,6 +134,7 @@ func runValidate(args []string) {
 	envFile := fs.String("env-file", "configs/environments.yaml", "environment config file")
 	policyFile := fs.String("policy", "configs/policies.yaml", "policy file")
 	notifyConfigFile := fs.String("notify-config", "", "notification routing config file")
+	chatopsConfigFile := fs.String("chatops-config", "", "chatops security config file")
 	_ = fs.Parse(args)
 
 	envCfg, err := config.LoadEnvironments(*envFile)
@@ -162,6 +164,18 @@ func runValidate(args []string) {
 			len(notifyCfg.Routes),
 			len(notifyCfg.Silences),
 			len(notifyCfg.MaintenanceWindows),
+		)
+	}
+	if strings.TrimSpace(*chatopsConfigFile) != "" {
+		chatCfg, err := chatops.LoadSecurityConfig(*chatopsConfigFile)
+		if err != nil {
+			fmt.Println("chatops config invalid:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("chatops config valid: %d users, %d deny patterns, max_input_chars=%d\n",
+			len(chatCfg.Users),
+			len(chatCfg.DenyPatterns),
+			chatCfg.MaxInputChars,
 		)
 	}
 }

@@ -33,6 +33,7 @@ Config validation:
 
 ```bash
 go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml
+go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml
 ```
 
 Scheduler (periodic health checks):
@@ -81,7 +82,7 @@ export OPENAI_API_KEY=<server_side_key>
 # optional when using an OpenAI-compatible gateway
 # export OPENAI_BASE_URL=https://your-gateway.example.com/v1
 # export OPENAI_MODEL=gpt-5-mini
-go run ./cmd/ops-telegram --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --bot-token "$OPS_TG_BOT_TOKEN" --chat-id <your_chat_id> --openai-api-key "$OPENAI_API_KEY" --audit audit/telegram.jsonl
+go run ./cmd/ops-telegram --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --bot-token "$OPS_TG_BOT_TOKEN" --chat-id <your_chat_id> --chatops-config configs/chatops.yaml --openai-api-key "$OPENAI_API_KEY" --audit audit/telegram.jsonl
 ```
 
 Telegram commands:
@@ -182,6 +183,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - State-changing natural-language operations now require a second confirmation step. The bot stores one pending confirmation per Telegram actor and only executes after the same actor replies `确认执行`; replying `取消` drops it.
 - `/reset` clears the stored LLM conversation state, and slash commands or approval buttons also reset that state to avoid stale context.
 - LLM tool calls and confirmation decisions are written to the Telegram audit file so model-driven actions can be traced separately from `ops-api`.
+- `configs/chatops.yaml` lets you define Telegram actors with `viewer / operator / approver / admin` roles, optional per-user `allowed_actions`, denylist patterns for prompt-injection-style input, and a max input length.
 - Restrict it with a single `--chat-id` so only one Telegram chat can interact with the control plane.
 - Users do not need their own ChatGPT/OpenAI account authorization; the bot uses one server-side API key.
 

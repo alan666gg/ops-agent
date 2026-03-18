@@ -31,6 +31,7 @@ type ConversationStateStore struct {
 type Agent struct {
 	OpenAI         OpenAIClient
 	OpsAPI         OpsAPIClient
+	Authorizer     Authorizer
 	State          ConversationStateStore
 	Confirmations  ConfirmationStore
 	AuditFile      string
@@ -342,6 +343,10 @@ func (a Agent) executeTool(ctx context.Context, call responseOutputItem, actor s
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 		return toolExecution{Output: respond(nil, fmt.Errorf("invalid tool arguments: %w", err))}
+	}
+	if err := a.Authorizer.AuthorizeTool(actor, call.Name, args); err != nil {
+		a.auditToolEvent(actor, call.Name, args, "denied", err.Error())
+		return toolExecution{Output: respond(nil, err)}
 	}
 	if a.requiresConfirmation(call.Name, args) {
 		pending := PendingConfirmation{
@@ -704,6 +709,10 @@ func (a Agent) loadPendingConfirmation(actor string) (PendingConfirmation, bool,
 }
 
 func (a Agent) executeConfirmedTool(ctx context.Context, pending PendingConfirmation, actor string) (string, error) {
+	if err := a.Authorizer.AuthorizeTool(actor, pending.ToolName, pending.Arguments); err != nil {
+		a.auditToolEvent(actor, pending.ToolName, pending.Arguments, "denied", err.Error())
+		return "", err
+	}
 	data, _, _, err := a.executeToolCall(ctx, pending.ToolName, pending.Arguments, actor)
 	status := "ok"
 	if err != nil {

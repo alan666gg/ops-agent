@@ -11,7 +11,7 @@ export OPENAI_API_KEY=<server_side_key>
 # optional for an OpenAI-compatible gateway
 # export OPENAI_BASE_URL=https://your-gateway.example.com/v1
 # export OPENAI_MODEL=gpt-5-mini
-go run ./cmd/ops-telegram --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --bot-token "$OPS_TG_BOT_TOKEN" --chat-id <telegram_chat_id> --openai-api-key "$OPENAI_API_KEY" --audit audit/telegram.jsonl
+go run ./cmd/ops-telegram --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --bot-token "$OPS_TG_BOT_TOKEN" --chat-id <telegram_chat_id> --chatops-config configs/chatops.yaml --openai-api-key "$OPENAI_API_KEY" --audit audit/telegram.jsonl
 ```
 
 Current behavior:
@@ -24,6 +24,7 @@ Current behavior:
 - Keeps slash commands as a fallback and resets LLM context whenever a slash command or approval button is used
 - Stores one pending natural-language confirmation per Telegram actor, so state-changing actions require the same actor to reply `确认执行` before they are sent to `ops-api`
 - Writes LLM tool calls and confirmation events to the Telegram audit file
+- Can enforce actor-level RBAC and input deny patterns from `configs/chatops.yaml`
 
 Supported commands:
 

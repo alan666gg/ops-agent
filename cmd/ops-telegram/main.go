@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/chatops"
 )
 
@@ -22,6 +24,7 @@ func main() {
 	approveTimeout := flag.Int("approve-timeout-seconds", 30, "timeout passed to /actions/approve")
 	telegramBase := flag.String("telegram-base", "", "override telegram api base url")
 	auditFile := flag.String("audit", "audit/telegram.jsonl", "audit output jsonl for telegram chatops and llm actions")
+	chatopsConfig := flag.String("chatops-config", "configs/chatops.yaml", "chatops security config file")
 	openAIAPIKey := flag.String("openai-api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key for natural-language chat")
 	openAIBase := flag.String("openai-base", os.Getenv("OPENAI_BASE_URL"), "override OpenAI-compatible Responses API base url")
 	openAIModel := flag.String("openai-model", envOrDefault("OPENAI_MODEL", "gpt-5-mini"), "OpenAI model for natural-language chat")
@@ -41,6 +44,11 @@ func main() {
 		BaseURL: *apiBase,
 		Token:   strings.TrimSpace(*apiToken),
 	}
+	securityCfg, err := chatops.LoadSecurityConfig(strings.TrimSpace(*chatopsConfig))
+	if err != nil {
+		log.Fatal(err)
+	}
+	authorizer := chatops.NewAuthorizer(securityCfg)
 	agent := chatops.Agent{
 		OpenAI: chatops.OpenAIClient{
 			APIKey:  strings.TrimSpace(*openAIAPIKey),
@@ -48,6 +56,7 @@ func main() {
 			Model:   strings.TrimSpace(*openAIModel),
 		},
 		OpsAPI:         apiClient,
+		Authorizer:     authorizer,
 		State:          chatops.ConversationStateStore{Path: *llmStateFile},
 		Confirmations:  chatops.ConfirmationStore{Path: *llmConfirmFile},
 		AuditFile:      *auditFile,
@@ -65,7 +74,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Printf("ops-telegram polling started api=%s chat_id=%d llm_enabled=%t model=%s", *apiBase, *chatID, agent.Enabled(), agent.OpenAI.Model)
+	log.Printf("ops-telegram polling started api=%s chat_id=%d llm_enabled=%t model=%s chatops_users=%d", *apiBase, *chatID, agent.Enabled(), agent.OpenAI.Model, authorizer.UserCount())
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), *pollTimeout+10*time.Second)
 		updates, err := tg.GetUpdates(ctx, offset, *pollTimeout)
@@ -80,14 +89,14 @@ func main() {
 			if err := store.Save(offset); err != nil {
 				log.Printf("save offset error: %v", err)
 			}
-			if err := handleUpdate(tg, apiClient, agent, update, *chatID, *approveTimeout); err != nil {
+			if err := handleUpdate(tg, apiClient, agent, *auditFile, update, *chatID, *approveTimeout); err != nil {
 				log.Printf("update %d error: %v", update.UpdateID, err)
 			}
 		}
 	}
 }
 
-func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent chatops.Agent, update chatops.Update, allowedChatID int64, approveTimeout int) error {
+func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent chatops.Agent, auditFile string, update chatops.Update, allowedChatID int64, approveTimeout int) error {
 	switch {
 	case update.Message != nil:
 		msg := update.Message
@@ -101,7 +110,11 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent cha
 		defer cancel()
 		actor := actorForUser(msg.From)
 		if strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
-			return handleCommandUpdate(ctx, tg, api, agent, *msg, actor, approveTimeout)
+			return handleCommandUpdate(ctx, tg, api, agent, auditFile, *msg, actor, approveTimeout)
+		}
+		if err := agent.Authorizer.AuthorizeInput(actor, msg.Text); err != nil {
+			emitChatopsAudit(auditFile, actor, "chatops_input", "blocked", err.Error())
+			return tg.SendMessage(ctx, msg.Chat.ID, "请求被安全策略拦截："+err.Error(), nil)
 		}
 		if reply, handled, err := agent.HandleConfirmation(ctx, msg.Text, actor); handled {
 			if err != nil {
@@ -126,10 +139,16 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent cha
 			_ = tg.AnswerCallbackQuery(context.Background(), cb.ID, "unauthorized")
 			return nil
 		}
-		if agent.Enabled() {
-			_ = agent.ResetActor(actorForUser(cb.From))
+		actor := actorForUser(cb.From)
+		if err := agent.Authorizer.AuthorizeCallback(actor, cb.Data); err != nil {
+			emitChatopsAudit(auditFile, actor, "chatops_callback", "denied", err.Error())
+			_ = tg.AnswerCallbackQuery(context.Background(), cb.ID, trimCallback(err.Error()))
+			return tg.SendMessage(context.Background(), cb.Message.Chat.ID, "callback denied: "+err.Error(), nil)
 		}
-		reply, err := handleCallback(context.Background(), api, cb.Data, actorForUser(cb.From), approveTimeout)
+		if agent.Enabled() {
+			_ = agent.ResetActor(actor)
+		}
+		reply, err := handleCallback(context.Background(), api, cb.Data, actor, approveTimeout)
 		if err != nil {
 			_ = tg.AnswerCallbackQuery(context.Background(), cb.ID, trimCallback(err.Error()))
 			return tg.SendMessage(context.Background(), cb.Message.Chat.ID, "callback failed: "+err.Error(), nil)
@@ -141,13 +160,17 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent cha
 	}
 }
 
-func handleCommandUpdate(ctx context.Context, tg chatops.TelegramClient, api chatops.OpsAPIClient, agent chatops.Agent, msg chatops.Message, actor string, approveTimeout int) error {
+func handleCommandUpdate(ctx context.Context, tg chatops.TelegramClient, api chatops.OpsAPIClient, agent chatops.Agent, auditFile string, msg chatops.Message, actor string, approveTimeout int) error {
 	cmd, err := chatops.ParseCommand(msg.Text)
 	if agent.Enabled() {
 		_ = agent.ResetActor(actor)
 	}
 	if err != nil {
 		return tg.SendMessage(ctx, msg.Chat.ID, err.Error()+"\n\n"+chatops.HelpText(), nil)
+	}
+	if err := agent.Authorizer.AuthorizeCommand(actor, cmd); err != nil {
+		emitChatopsAudit(auditFile, actor, "chatops_command", "denied", err.Error())
+		return tg.SendMessage(ctx, msg.Chat.ID, "command denied: "+err.Error(), nil)
 	}
 	if cmd.Name == "reset" {
 		return tg.SendMessage(ctx, msg.Chat.ID, "LLM 上下文已重置。", nil)
@@ -268,4 +291,19 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func emitChatopsAudit(path, actor, action, status, message string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = audit.AppendJSONL(path, audit.Event{
+		Time:    time.Now().UTC(),
+		Actor:   actor,
+		Action:  action,
+		Status:  status,
+		Message: message,
+		Target:  "telegram",
+	})
 }

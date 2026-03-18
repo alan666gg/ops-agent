@@ -1,0 +1,24 @@
+users: []
+
+deny_patterns:
+  - ignore previous instructions
+  - ignore all previous instructions
+  - system prompt
+  - developer message
+  - reveal hidden instructions
+
+max_input_chars: 1200
+
+# Example:
+# users:
+#   - actor: tg:@ops_viewer
+#     role: viewer
+#   - actor: tg:@ops_oncall
+#     role: operator
+#     allowed_actions:
+#       - check_host_health
+#       - check_service_health
+#       - check_dependencies
+#       - restart_container
+#   - actor: tg:@ops_approver
+#     role: approver
