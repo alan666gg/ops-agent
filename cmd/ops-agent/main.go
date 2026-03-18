@@ -18,6 +18,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/discovery"
 	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,6 +35,8 @@ func main() {
 		runPolicy(os.Args[2:])
 	case "discover":
 		runDiscover(os.Args[2:])
+	case "promql":
+		runPromQL(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
 	default:
@@ -47,6 +50,7 @@ func usage() {
 	fmt.Println("  health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1:6379")
 	fmt.Println("  policy --action <" + strings.Join(actions.Names(), "|") + "> --env test --policy configs/policies.yaml --audit audit.jsonl")
 	fmt.Println("  discover --env-file configs/environments.yaml --env test --host test-app-1 --format yaml --apply")
+	fmt.Println("  promql --env-file configs/environments.yaml --env test --query 'up' --minutes 30")
 	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml")
 }
 
@@ -286,6 +290,89 @@ func runDiscover(args []string) {
 		return
 	}
 	fmt.Println(string(payload))
+}
+
+func runPromQL(args []string) {
+	fs := flag.NewFlagSet("promql", flag.ExitOnError)
+	envFile := fs.String("env-file", "configs/environments.yaml", "environment config file")
+	envName := fs.String("env", "test", "environment name")
+	query := fs.String("query", "", "PromQL expression")
+	minutes := fs.Int("minutes", 0, "range window in minutes; 0 means instant query")
+	step := fs.Duration("step", 0, "range query step duration; auto-selected when omitted")
+	format := fs.String("format", "text", "output format: text|json|yaml")
+	_ = fs.Parse(args)
+
+	if strings.TrimSpace(*query) == "" {
+		fmt.Println("query is required")
+		os.Exit(1)
+	}
+	cfg, err := config.LoadEnvironments(*envFile)
+	if err != nil {
+		fmt.Println("environment config invalid:", err)
+		os.Exit(1)
+	}
+	env, ok := cfg.Environment(*envName)
+	if !ok {
+		fmt.Printf("env %q not found in %s\n", *envName, *envFile)
+		os.Exit(1)
+	}
+	promCfg := env.Prometheus.WithDefaults()
+	if !promCfg.Enabled() {
+		fmt.Printf("env %q has no prometheus config\n", *envName)
+		os.Exit(1)
+	}
+	token := ""
+	if name := strings.TrimSpace(promCfg.BearerTokenEnv); name != "" {
+		token = strings.TrimSpace(os.Getenv(name))
+		if token == "" {
+			fmt.Printf("prometheus bearer token env %q is empty\n", name)
+			os.Exit(1)
+		}
+	}
+	client := promapi.Client{
+		BaseURL:     promCfg.BaseURL,
+		BearerToken: token,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), promCfg.Timeout)
+	defer cancel()
+
+	var out promapi.QueryResponse
+	if *minutes > 0 {
+		if *step <= 0 {
+			*step = promapi.AutoStep(time.Duration(*minutes) * time.Minute)
+		}
+		end := time.Now().UTC()
+		start := end.Add(-time.Duration(*minutes) * time.Minute)
+		out, err = client.QueryRange(ctx, *query, start, end, *step)
+	} else {
+		out, err = client.QueryInstant(ctx, *query, time.Now().UTC())
+	}
+	if err != nil {
+		fmt.Println("prometheus query failed:", err)
+		os.Exit(1)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(*format)) {
+	case "text":
+		fmt.Println(out.Summary)
+	case "json":
+		b, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			fmt.Println("encode query result error:", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(b))
+	case "yaml", "yml":
+		b, err := yaml.Marshal(out)
+		if err != nil {
+			fmt.Println("encode query result error:", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(b))
+	default:
+		fmt.Println("format must be text, json, or yaml")
+		os.Exit(1)
+	}
 }
 
 func defaultString(v, fallback string) string {

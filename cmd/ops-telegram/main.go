@@ -221,6 +221,15 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 			return "health failed: " + err.Error(), nil
 		}
 		return chatops.FormatHealth(resp), nil
+	case "promql":
+		if _, err := authorizeCommandEnv(agent, actor, cmd.Env); err != nil {
+			return "prometheus query denied: " + err.Error(), nil
+		}
+		resp, err := api.PrometheusQuery(ctx, cmd.Env, cmd.Query, cmd.Minutes, cmd.Step)
+		if err != nil {
+			return "prometheus query failed: " + err.Error(), nil
+		}
+		return chatops.FormatPrometheusQuery(resp), nil
 	case "incidents":
 		projects, err := agent.Authorizer.AllowedProjects(actor)
 		if err != nil {

@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/alan666gg/ops-agent/internal/approval"
 	"github.com/alan666gg/ops-agent/internal/incident"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 )
 
 func TestOpsAPIClientHealthAndApprove(t *testing.T) {
@@ -20,6 +22,12 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 		switch r.URL.Path {
 		case "/health/run":
 			return jsonResponse(http.StatusOK, HealthResponse{Env: "prod", Status: "fail", Summary: "bad"}), nil
+		case "/prometheus/query":
+			return jsonResponse(http.StatusOK, PrometheusQueryResponse{
+				Project: "core",
+				Env:     "prod",
+				Data:    promapi.QueryResponse{Query: "up", ResultType: "vector", Summary: "vector query returned 1 series"},
+			}), nil
 		case "/incidents/active":
 			return jsonResponse(http.StatusOK, IncidentListResponse{Count: 1, Items: []incident.Record{{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"}}}), nil
 		case "/incidents/get":
@@ -51,6 +59,13 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 	}
 	if health.Env != "prod" || health.Status != "fail" {
 		t.Fatalf("unexpected health response: %+v", health)
+	}
+	prom, err := api.PrometheusQuery(context.Background(), "prod", "up", 30, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prom.Project != "core" || prom.Data.Query != "up" {
+		t.Fatalf("unexpected prometheus response: %+v", prom)
 	}
 	item, err := api.GetAction(context.Background(), "r1")
 	if err != nil {

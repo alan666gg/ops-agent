@@ -258,6 +258,23 @@ func (a Agent) toolSchemas() []responseTool {
 		},
 		{
 			Type:        "function",
+			Name:        "query_prometheus",
+			Description: "Query one environment's Prometheus for instant metrics or a recent time range when the user asks about CPU, memory, latency, QPS, error rate, or trends.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"env":          map[string]any{"type": "string", "description": "Environment name such as test, prod, or production."},
+					"query":        map[string]any{"type": "string", "description": "PromQL expression."},
+					"minutes":      map[string]any{"type": "integer", "minimum": 0, "maximum": 10080},
+					"step_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 86400},
+				},
+				"required":             []string{"env", "query"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "get_incident_summary",
 			Description: "Get incident summary counts for a recent time window in minutes.",
 			Strict:      true,
@@ -505,6 +522,15 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 			data.Project = project
 		}
 		return data, env, "", err
+	case "query_prometheus":
+		env := stringFromAny(args["env"])
+		if _, err := a.authorizeEnv(actor, env); err != nil {
+			return nil, env, "", err
+		}
+		stepSeconds := intFromAny(args["step_seconds"], 0)
+		step := time.Duration(stepSeconds) * time.Second
+		data, err := a.OpsAPI.PrometheusQuery(ctx, env, stringFromAny(args["query"]), intFromAny(args["minutes"], 0), step)
+		return data, env, "", err
 	case "get_incident_summary":
 		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
 		if err != nil {
@@ -637,7 +663,7 @@ func (a Agent) prompt() string {
 	var b strings.Builder
 	b.WriteString("You are the Telegram operations assistant for ops-agent.\n")
 	b.WriteString("Respond in the user's language, defaulting to Chinese.\n")
-	b.WriteString("Use tools whenever the user asks about health, incidents, pending approvals, or actions.\n")
+	b.WriteString("Use tools whenever the user asks about health, Prometheus metrics, incidents, pending approvals, or actions.\n")
 	b.WriteString("Never invent request IDs, environments, host names, or action names.\n")
 	b.WriteString("Respect project isolation. If a project is ambiguous, ask one short follow-up question instead of guessing.\n")
 	b.WriteString("Before approving or rejecting an ambiguous request, prefer listing or fetching request details first.\n")

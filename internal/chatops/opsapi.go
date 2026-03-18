@@ -14,6 +14,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/approval"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/incident"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 )
 
 type OpsAPIClient struct {
@@ -47,6 +48,12 @@ type IncidentListResponse struct {
 }
 
 type IncidentTimelineResponse = incident.Timeline
+
+type PrometheusQueryResponse struct {
+	Project string                `json:"project,omitempty"`
+	Env     string                `json:"env"`
+	Data    promapi.QueryResponse `json:"data"`
+}
 
 type PendingResponse struct {
 	Count int                `json:"count"`
@@ -86,6 +93,23 @@ func (c OpsAPIClient) Health(ctx context.Context, env string) (HealthResponse, e
 	q := url.Values{}
 	q.Set("env", strings.TrimSpace(env))
 	if err := c.doJSON(ctx, http.MethodGet, "/health/run?"+q.Encode(), nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c OpsAPIClient) PrometheusQuery(ctx context.Context, env, query string, minutes int, step time.Duration) (PrometheusQueryResponse, error) {
+	var out PrometheusQueryResponse
+	q := url.Values{}
+	q.Set("env", strings.TrimSpace(env))
+	q.Set("query", strings.TrimSpace(query))
+	if minutes > 0 {
+		q.Set("minutes", fmt.Sprintf("%d", minutes))
+	}
+	if step > 0 {
+		q.Set("step", step.String())
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/prometheus/query?"+q.Encode(), nil, &out); err != nil {
 		return out, err
 	}
 	return out, nil

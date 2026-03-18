@@ -2,12 +2,15 @@ package chatops
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alan666gg/ops-agent/internal/approval"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/incident"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 )
 
 type Command struct {
@@ -22,6 +25,8 @@ type Command struct {
 	Args       []string
 	Reason     string
 	Owner      string
+	Query      string
+	Step       time.Duration
 }
 
 func ParseCommand(text string) (Command, error) {
@@ -91,6 +96,36 @@ func ParseCommand(text string) (Command, error) {
 			out.Minutes = v
 		}
 		return out, nil
+	case "promql":
+		if len(fields) < 3 {
+			return Command{}, fmt.Errorf("usage: /promql <env> [--minutes=30] [--step=60s] <query>")
+		}
+		out.Minutes = 0
+		out.Env = fields[1]
+		queryFields := make([]string, 0, len(fields)-2)
+		for _, field := range fields[2:] {
+			switch {
+			case strings.HasPrefix(field, "--minutes="):
+				v, err := strconv.Atoi(strings.TrimPrefix(field, "--minutes="))
+				if err != nil || v < 0 {
+					return Command{}, fmt.Errorf("minutes must be a non-negative integer")
+				}
+				out.Minutes = v
+			case strings.HasPrefix(field, "--step="):
+				d, err := time.ParseDuration(strings.TrimPrefix(field, "--step="))
+				if err != nil || d <= 0 {
+					return Command{}, fmt.Errorf("step must be a positive duration")
+				}
+				out.Step = d
+			default:
+				queryFields = append(queryFields, field)
+			}
+		}
+		out.Query = strings.TrimSpace(strings.Join(queryFields, " "))
+		if out.Query == "" {
+			return Command{}, fmt.Errorf("usage: /promql <env> [--minutes=30] [--step=60s] <query>")
+		}
+		return out, nil
 	case "approve":
 		if len(fields) < 2 {
 			return Command{}, fmt.Errorf("usage: /approve <request_id>")
@@ -153,6 +188,7 @@ func HelpText() string {
 		"/help",
 		"/reset",
 		"/health <env>",
+		"/promql <env> [--minutes=30] [--step=60s] <query>",
 		"/incidents [minutes]",
 		"/pending",
 		"/active [env]",
@@ -225,6 +261,45 @@ func FormatHealth(resp HealthResponse) string {
 			line += " approval_required"
 		}
 		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatPrometheusQuery(resp PrometheusQueryResponse) string {
+	lines := []string{
+		fmt.Sprintf("prometheus env=%s project=%s", defaultString(resp.Env, "test"), defaultString(resp.Project, "default")),
+		"- " + trimForChat(resp.Data.Summary, 200),
+		"- query=" + trimForChat(resp.Data.Query, 160),
+		"- result_type=" + resp.Data.ResultType,
+	}
+	if len(resp.Data.Warnings) > 0 {
+		lines = append(lines, "- warning="+trimForChat(resp.Data.Warnings[0], 160))
+	}
+	switch resp.Data.ResultType {
+	case "vector":
+		for i, item := range resp.Data.Series {
+			if i >= 5 {
+				lines = append(lines, fmt.Sprintf("- series ... and %d more", len(resp.Data.Series)-i))
+				break
+			}
+			lines = append(lines, "- "+formatPrometheusSeries(item))
+		}
+	case "matrix":
+		for i, item := range resp.Data.Series {
+			if i >= 5 {
+				lines = append(lines, fmt.Sprintf("- series ... and %d more", len(resp.Data.Series)-i))
+				break
+			}
+			lines = append(lines, "- "+formatPrometheusSeries(item))
+		}
+	case "scalar":
+		if resp.Data.Scalar != nil {
+			lines = append(lines, fmt.Sprintf("- scalar %s @ %s", resp.Data.Scalar.Value, resp.Data.Scalar.Time.UTC().Format("15:04:05")))
+		}
+	case "string":
+		if resp.Data.String != nil {
+			lines = append(lines, fmt.Sprintf("- string %s @ %s", trimForChat(resp.Data.String.Value, 160), resp.Data.String.Time.UTC().Format("15:04:05")))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -431,6 +506,43 @@ func formatTimelineEntry(item incident.TimelineEntry) string {
 		parts = append(parts, "likely_change")
 	}
 	return strings.Join(parts, " ")
+}
+
+func formatPrometheusSeries(item promapi.Series) string {
+	metric := formatPrometheusMetric(item.Metric)
+	switch {
+	case item.Value != nil:
+		if metric == "" {
+			return item.Value.Value
+		}
+		return metric + " value=" + item.Value.Value
+	case len(item.Values) > 0:
+		last := item.Values[len(item.Values)-1]
+		if metric == "" {
+			return fmt.Sprintf("last=%s samples=%d", last.Value, len(item.Values))
+		}
+		return fmt.Sprintf("%s last=%s samples=%d", metric, last.Value, len(item.Values))
+	case metric != "":
+		return metric
+	default:
+		return "(empty series)"
+	}
+}
+
+func formatPrometheusMetric(metric map[string]string) string {
+	if len(metric) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(metric))
+	for key := range metric {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+metric[key])
+	}
+	return strings.Join(parts, ",")
 }
 
 func trimForChat(v string, limit int) string {

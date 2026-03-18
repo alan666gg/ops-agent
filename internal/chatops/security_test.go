@@ -36,6 +36,9 @@ max_input_chars: 100
 	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "health", Env: "prod"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "promql", Env: "prod", Query: "up"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "timeline", IncidentID: "ops-scheduler|payments|prod"}); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +61,9 @@ max_input_chars: 100
 		t.Fatal(err)
 	}
 	if err := auth.AuthorizeTool("tg:@viewer", "get_incident_timeline", map[string]any{"incident_id": "ops-scheduler|payments|prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AuthorizeTool("tg:@viewer", "query_prometheus", map[string]any{"env": "prod", "query": "up"}); err != nil {
 		t.Fatal(err)
 	}
 }

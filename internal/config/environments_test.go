@@ -50,6 +50,10 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "environments.yaml")
 	content := `environments:
   test:
+    prometheus:
+      base_url: http://127.0.0.1:9090
+      bearer_token_env: PROM_TEST_TOKEN
+      timeout: 10s
     hosts:
       - name: app-1
         host: 127.0.0.1
@@ -90,6 +94,10 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	if len(cfg.Environments) != 1 {
 		t.Fatalf("expected 1 environment, got %d", len(cfg.Environments))
 	}
+	prom := cfg.Environments["test"].Prometheus.WithDefaults()
+	if prom.BaseURL != "http://127.0.0.1:9090" || prom.BearerTokenEnv != "PROM_TEST_TOKEN" || prom.Timeout != 10*time.Second {
+		t.Fatalf("unexpected prometheus config: %+v", prom)
+	}
 	slo := cfg.Environments["test"].Services[0].SLO.WithDefaults()
 	if slo.PageBurnRate != 10 || slo.TicketBurnRate != 2 || slo.MinSamples != 4 {
 		t.Fatalf("unexpected slo defaults: %+v", slo)
@@ -101,6 +109,26 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	serviceChecks := cfg.Environments["test"].Services[0].Checks.WithDefaults(cfg.Environments["test"].Services[0])
 	if serviceChecks.RestartWarnCount != 2 || serviceChecks.RestartFailCount != 5 || serviceChecks.RestartFlapWindow != 15*time.Minute {
 		t.Fatalf("unexpected service check config: %+v", serviceChecks)
+	}
+}
+
+func TestLoadEnvironmentsRejectsInvalidPrometheusConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    prometheus:
+      base_url: ftp://127.0.0.1:9090
+      bearer_token_env: bad-token
+    hosts: []
+    services: []
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadEnvironments(path); err == nil {
+		t.Fatal("expected invalid prometheus config validation error")
 	}
 }
 

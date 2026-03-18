@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -164,5 +166,68 @@ func TestHandleIncidentTimeline(t *testing.T) {
 	}
 	if len(got.CorrelatedChanges) != 1 || got.CorrelatedChanges[0].Action != "restart_container" {
 		t.Fatalf("unexpected correlated changes: %+v", got.CorrelatedChanges)
+	}
+}
+
+func TestHandlePrometheusQuery(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "environments.yaml")
+	content := "environments:\n  prod:\n    project: core\n    prometheus:\n      base_url: http://prometheus.test\n      timeout: 5s\n    hosts: []\n    services: []\n    dependencies: []\n"
+	if err := os.WriteFile(envFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prevFactory := newPrometheusHTTPClient
+	newPrometheusHTTPClient = func(timeout time.Duration) *http.Client {
+		return &http.Client{Transport: promRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/api/v1/query_range" {
+				t.Fatalf("unexpected prometheus path: %s", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("query"); got != "up" {
+				t.Fatalf("unexpected query: %q", got)
+			}
+			return promJSONResponse(http.StatusOK, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"node","instance":"app-1:9100"},"values":[[1710756000,"1"],[1710756060,"1"]]}]}}`), nil
+		})}
+	}
+	defer func() { newPrometheusHTTPClient = prevFactory }()
+
+	s := &server{envFile: envFile}
+	req := httptest.NewRequest(http.MethodGet, "/prometheus/query?env=prod&query=up&minutes=30", nil)
+	rr := httptest.NewRecorder()
+
+	s.handlePrometheusQuery(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var got struct {
+		Project string `json:"project"`
+		Env     string `json:"env"`
+		Data    struct {
+			ResultType string `json:"result_type"`
+			Summary    string `json:"summary"`
+			Series     []struct {
+				Metric map[string]string `json:"metric"`
+			} `json:"series"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Project != "core" || got.Env != "prod" || got.Data.ResultType != "matrix" || len(got.Data.Series) != 1 {
+		t.Fatalf("unexpected prometheus query response: %+v", got)
+	}
+}
+
+type promRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f promRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func promJSONResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/approval"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/incident"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 )
 
 func TestParseCommandHealthAndRequest(t *testing.T) {
@@ -69,6 +70,14 @@ func TestParseCommandHealthAndRequest(t *testing.T) {
 	if cmd.Name != "timeline" || cmd.IncidentID != "ops-scheduler|core|prod" || cmd.Minutes != 120 {
 		t.Fatalf("unexpected timeline command: %+v", cmd)
 	}
+
+	cmd, err = ParseCommand("/promql prod --minutes=30 --step=60s avg(rate(http_requests_total[5m]))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "promql" || cmd.Env != "prod" || cmd.Minutes != 30 || cmd.Step != time.Minute || cmd.Query != "avg(rate(http_requests_total[5m]))" {
+		t.Fatalf("unexpected promql command: %+v", cmd)
+	}
 }
 
 func TestParseCommandRejectRequiresRequestID(t *testing.T) {
@@ -95,6 +104,29 @@ func TestFormatHealthIncludesSuppressedAndSuggestions(t *testing.T) {
 		},
 	})
 	for _, want := range []string{"[FAIL]", "highlight service_runtime_api [CONTAINER_OOMKILLED]", "host_ssh_app_1 [TCP_UNREACHABLE]", "suppressed service_api", "suggest check_host_health"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+}
+
+func TestFormatPrometheusQuery(t *testing.T) {
+	text := FormatPrometheusQuery(PrometheusQueryResponse{
+		Project: "core",
+		Env:     "prod",
+		Data: promapi.QueryResponse{
+			Query:      "up",
+			ResultType: "vector",
+			Summary:    "vector query returned 1 series; top=instance=app-1:9100,job=node value=1",
+			Series: []promapi.Series{
+				{
+					Metric: map[string]string{"job": "node", "instance": "app-1:9100"},
+					Value:  &promapi.Sample{Time: stringsToTime(t, "2026-03-18T10:05:00Z"), Value: "1"},
+				},
+			},
+		},
+	})
+	for _, want := range []string{"prometheus env=prod project=core", "query=up", "result_type=vector", "instance=app-1:9100"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}

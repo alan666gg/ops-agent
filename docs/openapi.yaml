@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ops-agent API
-  version: 0.3.1
+  version: 0.3.2
 servers:
   - url: http://127.0.0.1:8090
 components:
@@ -41,6 +41,26 @@ paths:
             description: When true and a notifier is configured, send the incident summary for warn/fail results
       responses:
         '200': { description: Health results }
+  /prometheus/query:
+    get:
+      summary: Run a read-only PromQL query against the environment's Prometheus
+      parameters:
+        - in: query
+          name: env
+          required: true
+          schema: { type: string }
+        - in: query
+          name: query
+          required: true
+          schema: { type: string }
+        - in: query
+          name: minutes
+          schema: { type: integer, default: 0, description: 0 means instant query }
+        - in: query
+          name: step
+          schema: { type: string, description: Optional range step duration such as 60s or 5m }
+      responses:
+        '200': { description: Prometheus query result }
   /actions/request:
     post:
       summary: Create action request (pending or auto-executed)

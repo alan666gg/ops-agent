@@ -25,6 +25,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/incident"
 	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 	"github.com/alan666gg/ops-agent/internal/slo"
 )
 
@@ -77,6 +78,10 @@ type rateLimiter struct {
 	window   time.Duration
 	max      int
 	requests map[string][]time.Time
+}
+
+var newPrometheusHTTPClient = func(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout}
 }
 
 func newRateLimiter(window time.Duration, max int) *rateLimiter {
@@ -273,6 +278,7 @@ func main() {
 	mux.HandleFunc("/actions/get", s.handleGetAction)
 	mux.HandleFunc("/actions/list", s.handleListActions)
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
+	mux.HandleFunc("/prometheus/query", s.handlePrometheusQuery)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
 	mux.HandleFunc("/incidents/active", s.handleActiveIncidents)
 	mux.HandleFunc("/incidents/get", s.handleGetIncident)
@@ -880,6 +886,75 @@ func (s *server) handleIncidentSummary(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(incidentSummary{WindowMinutes: window, Projects: projects, Total: total, ByStatus: byStatus, TopTargets: topTargets})
 }
 
+func (s *server) handlePrometheusQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	envName := strings.TrimSpace(r.URL.Query().Get("env"))
+	if envName == "" {
+		http.Error(w, `{"error":"env required"}`, http.StatusBadRequest)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("query"))
+	if query == "" {
+		http.Error(w, `{"error":"query required"}`, http.StatusBadRequest)
+		return
+	}
+	cfg, err := config.LoadEnvironments(s.envFile)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	env, ok := cfg.Environment(envName)
+	if !ok {
+		http.Error(w, `{"error":"env not found"}`, http.StatusNotFound)
+		return
+	}
+	client, timeout, err := prometheusClientForEnv(env)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	window := 0
+	if v := strings.TrimSpace(r.URL.Query().Get("minutes")); v != "" {
+		fmt.Sscanf(v, "%d", &window)
+		if window < 0 || window > 7*24*60 {
+			http.Error(w, `{"error":"minutes must be between 0 and 10080"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	var out promapi.QueryResponse
+	if window > 0 {
+		step := promapi.AutoStep(time.Duration(window) * time.Minute)
+		if raw := strings.TrimSpace(r.URL.Query().Get("step")); raw != "" {
+			parsed, err := time.ParseDuration(raw)
+			if err != nil || parsed <= 0 {
+				http.Error(w, `{"error":"invalid step duration"}`, http.StatusBadRequest)
+				return
+			}
+			step = parsed
+		}
+		end := time.Now().UTC()
+		start := end.Add(-time.Duration(window) * time.Minute)
+		out, err = client.QueryRange(ctx, query, start, end, step)
+	} else {
+		out, err = client.QueryInstant(ctx, query, time.Now().UTC())
+	}
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadGateway)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"project": env.ProjectName(),
+		"env":     envName,
+		"data":    out,
+	})
+}
+
 func (s *server) handleActiveIncidents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1180,6 +1255,25 @@ func shouldSuppressAcknowledged(rec incident.Record, report incident.Report) boo
 		return false
 	}
 	return strings.TrimSpace(rec.Fingerprint) == strings.TrimSpace(report.Fingerprint)
+}
+
+func prometheusClientForEnv(env config.Environment) (promapi.Client, time.Duration, error) {
+	cfg := env.Prometheus.WithDefaults()
+	if !cfg.Enabled() {
+		return promapi.Client{}, 0, fmt.Errorf("prometheus not configured for env")
+	}
+	token := ""
+	if name := strings.TrimSpace(cfg.BearerTokenEnv); name != "" {
+		token = strings.TrimSpace(os.Getenv(name))
+		if token == "" {
+			return promapi.Client{}, 0, fmt.Errorf("prometheus bearer token env %q is empty", name)
+		}
+	}
+	return promapi.Client{
+		BaseURL:     cfg.BaseURL,
+		BearerToken: token,
+		HTTPClient:  newPrometheusHTTPClient(cfg.Timeout),
+	}, cfg.Timeout, nil
 }
 
 func (s *server) resolveAuditFile(name string) (string, error) {

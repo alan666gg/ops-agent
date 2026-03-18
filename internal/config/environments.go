@@ -17,10 +17,17 @@ type EnvironmentFile struct {
 }
 
 type Environment struct {
-	Project      string    `yaml:"project,omitempty"`
-	Hosts        []Host    `yaml:"hosts"`
-	Services     []Service `yaml:"services"`
-	Dependencies []string  `yaml:"dependencies"`
+	Project      string           `yaml:"project,omitempty"`
+	Prometheus   PrometheusConfig `yaml:"prometheus,omitempty"`
+	Hosts        []Host           `yaml:"hosts"`
+	Services     []Service        `yaml:"services"`
+	Dependencies []string         `yaml:"dependencies"`
+}
+
+type PrometheusConfig struct {
+	BaseURL        string        `yaml:"base_url,omitempty"`
+	BearerTokenEnv string        `yaml:"bearer_token_env,omitempty"`
+	Timeout        time.Duration `yaml:"timeout,omitempty"`
 }
 
 type Host struct {
@@ -138,6 +145,9 @@ func (f EnvironmentFile) ProjectForEnv(name string) string {
 }
 
 func (e Environment) Validate(envName string) error {
+	if err := e.Prometheus.Validate(envName); err != nil {
+		return err
+	}
 	hostNames := map[string]bool{}
 	for _, host := range e.Hosts {
 		if strings.TrimSpace(host.Name) == "" {
@@ -257,6 +267,43 @@ func (e Environment) HostByName(name string) (Host, bool) {
 		}
 	}
 	return Host{}, false
+}
+
+func (p PrometheusConfig) Enabled() bool {
+	return strings.TrimSpace(p.BaseURL) != ""
+}
+
+func (p PrometheusConfig) WithDefaults() PrometheusConfig {
+	if !p.Enabled() {
+		return p
+	}
+	if p.Timeout <= 0 {
+		p.Timeout = 8 * time.Second
+	}
+	return p
+}
+
+func (p PrometheusConfig) Validate(envName string) error {
+	if !p.Enabled() {
+		if strings.TrimSpace(p.BearerTokenEnv) != "" {
+			return fmt.Errorf("environment %q prometheus bearer_token_env requires base_url", envName)
+		}
+		return nil
+	}
+	p = p.WithDefaults()
+	parsed, err := url.Parse(strings.TrimSpace(p.BaseURL))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("environment %q has invalid prometheus base_url %q", envName, p.BaseURL)
+	}
+	if strings.TrimSpace(p.BearerTokenEnv) != "" {
+		if err := validateEnvVarName(p.BearerTokenEnv); err != nil {
+			return fmt.Errorf("environment %q prometheus bearer_token_env invalid: %w", envName, err)
+		}
+	}
+	if p.Timeout <= 0 {
+		return fmt.Errorf("environment %q prometheus timeout must be > 0", envName)
+	}
+	return nil
 }
 
 func (e Environment) HostByEndpoint(endpoint string) (Host, bool) {
@@ -456,6 +503,24 @@ func validateScopedName(label, value string) error {
 		case r == '-', r == '_', r == '.':
 		default:
 			return fmt.Errorf("only letters, numbers, '.', '-', and '_' are allowed")
+		}
+	}
+	return nil
+}
+
+func validateEnvVarName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r == '_':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return fmt.Errorf("must match shell env var naming rules")
 		}
 	}
 	return nil

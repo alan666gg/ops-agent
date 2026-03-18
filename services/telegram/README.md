@@ -19,6 +19,7 @@ Current behavior:
 - Long-polls Telegram with `getUpdates`
 - Restricts interaction to a single `--chat-id`
 - Calls `ops-api` for health, incidents, pending approvals, approvals, rejections, and action requests
+- Calls `ops-api` for Prometheus queries tied to the selected environment
 - Calls `ops-api` for active incident lifecycle too, including acknowledge and owner assignment
 - Renders inline `Approve` / `Reject` buttons for pending approval items
 - Uses OpenAI Responses API tool calling for non-`/` natural-language messages when `OPENAI_API_KEY` is configured
@@ -33,6 +34,7 @@ Supported commands:
 - `/help`
 - `/reset`
 - `/health <env>`
+- `/promql <env> [--minutes=30] [--step=60s] <query>`
 - `/incidents [minutes]`
 - `/active [env]`
 - `/incident <incident_id>`
@@ -49,6 +51,8 @@ Supported commands:
 Natural-language examples:
 
 - `prod 现在状态怎么样`
+- `prod 过去 30 分钟请求量怎么样`
+- `prod CPU 最近是不是升高了`
 - `最近 2 小时有什么异常`
 - `列出 prod 的活跃事故`
 - `先 ack 掉 prod 那个 incident`
@@ -66,3 +70,4 @@ Interaction notes:
 - `/show <request_id>` returns one request's full detail and, if it is still pending, renders approve/reject buttons for that exact request
 - `/incident <incident_id>` returns one incident's detail and, if it is still open, renders timeline/ack/claim buttons for that exact incident
 - `/timeline <incident_id> [minutes]` summarizes recent audit events and likely correlated changes around one incident
+- `/promql <env> ...` returns either an instant Prometheus value or a short range summary for the selected environment

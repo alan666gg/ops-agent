@@ -14,6 +14,7 @@ Endpoints:
 - `GET /ready` (no token)
 - `GET /metrics` (no token, Prometheus text format)
 - `GET /health/run?env=test` (Bearer token)
+- `GET /prometheus/query?env=prod&query=up` (Bearer token)
 - `POST /actions/run` (Bearer token; direct mode; request body supports `env` and optional `target_host`)
 - `POST /actions/request` (Bearer token; creates approval ticket; request body supports `env` and optional `target_host`)
 - `GET /actions/pending` (Bearer token)
@@ -32,6 +33,7 @@ Endpoints:
 OpenAPI draft: `docs/openapi.yaml`
 
 If `target_host` is provided, the API resolves that host from the selected environment and runs the runbook over SSH.
+If the selected environment declares `prometheus.base_url`, `GET /prometheus/query` proxies read-only PromQL queries through that environment's Prometheus.
 
 `GET /health/run` includes local host basics, configured host SSH reachability, service health URLs, and dependency checks for the selected environment.
 If a service declares `host`, the response can suppress downstream service symptoms when that host is already the active root cause.
@@ -40,5 +42,6 @@ If the API is started with notifier flags, `/health/run?...&notify=1` also sends
 `--incident-state-file` persists active incident state, acknowledgement, owner, and notes; the same store powers `/incidents/active`, `/incidents/get`, `/incidents/timeline`, `/incidents/ack`, and `/incidents/assign`.
 Acknowledged incidents suppress duplicate notify repeats until the fingerprint changes again.
 `GET /incidents/timeline` correlates recent audit events around one incident and highlights likely change events, such as deploy/runbook actions shortly before the incident first appeared.
+`GET /prometheus/query` supports instant queries by default, or range queries when `minutes` is set. `step` is optional and defaults to an auto-selected resolution.
 `--notify-config` replaces direct notifier flags with a routed notification policy that supports named receivers, silences, and maintenance windows.
 `--notify-trigger-after` and `--notify-recovery-after` help suppress flapping by requiring consecutive unhealthy or healthy samples before opening or closing an incident.

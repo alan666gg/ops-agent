@@ -36,6 +36,13 @@ go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy co
 go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml
 ```
 
+Prometheus query:
+
+```bash
+go run ./cmd/ops-agent promql --env-file configs/environments.yaml --env test --query 'up'
+go run ./cmd/ops-agent promql --env-file configs/environments.yaml --env prod --query 'avg(rate(http_requests_total[5m]))' --minutes 30 --step 60s --format json
+```
+
 Host discovery (Docker + systemd + listening ports over SSH):
 
 ```bash
@@ -136,6 +143,8 @@ Telegram commands:
 /help
 /reset
 /health prod
+/promql prod up
+/promql prod --minutes=30 --step=60s avg(rate(http_requests_total[5m]))
 /incidents 60
 /active prod
 /incident <incident_id>
@@ -154,6 +163,8 @@ Telegram natural language:
 
 ```text
 prod 现在状态怎么样
+prod 过去 30 分钟请求量怎么样
+prod CPU 最近是不是升高了
 最近 2 小时有什么异常
 列出 prod 的活跃事故
 把 prod 那个 incident 先 ack 掉
@@ -169,6 +180,8 @@ Quick test:
 ```bash
 curl -s http://127.0.0.1:8090/ready
 curl -s "http://127.0.0.1:8090/health/run?env=test" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s "http://127.0.0.1:8090/prometheus/query?env=test&query=up" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s "http://127.0.0.1:8090/prometheus/query?env=prod&query=avg(rate(http_requests_total%5B5m%5D))&minutes=30&step=60s" -H "Authorization: Bearer $OPS_API_TOKEN"
 
 # notify on demand for manual health runs
 curl -s "http://127.0.0.1:8090/health/run?env=prod&notify=1" -H "Authorization: Bearer $OPS_API_TOKEN"
@@ -234,6 +247,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `/health` and `/health/run` responses now include `highlights`, which bubble the most actionable runtime/log signals to the top for Telegram and LLM consumers.
 - `environments.<env>.project` adds a first-class project boundary; actions, incident summaries, and Telegram access control can now be scoped by project.
 - `audit-driver sqlite` + `incident-state-file` upgrades the control plane from append-only logs to a queryable state model with active incidents, acknowledgements, and ownership.
+- `environments.<env>.prometheus` lets the control plane read that environment's Prometheus as an external observability source without giving the bot write access.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 - `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.
@@ -256,6 +270,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `/pending` now includes `View / Approve / Reject` inline buttons, and high-risk LLM actions expose `Confirm / Cancel` buttons as a safer alternative to free-text confirmation.
 - `/active`, `/incident`, `/ack`, and `/assign` turn Telegram into a real incident room: responders can see what is currently open, acknowledge it, and claim ownership without leaving chat.
 - `/timeline <incident_id> [minutes]` and the inline `Timeline` button let responders inspect what changed shortly before an incident opened, including likely correlated deploy/runbook changes.
+- `/promql <env> ...` and the `query_prometheus` LLM tool let responders pull Prometheus metrics and recent trends into the same Telegram workflow as incidents and approvals.
 - If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.
 - The LLM is a planner only: it can read health/incidents/pending requests and submit approve/reject/request actions through `ops-api`, so policy, approval, audit, and execution still stay in `ops-api` + `ops-worker`.
 - `/requests [status]` and `/show <request_id>` make request detail lookup explicit, so operators and the LLM can inspect a concrete request before approving or rejecting it.
