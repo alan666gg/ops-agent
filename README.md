@@ -44,3 +44,19 @@ go run ./cmd/ops-worker --action check_host_health --policy configs/policies.yam
 go run ./cmd/ops-worker --action restart_container --args cicdtest-app --policy configs/policies.yaml --audit audit/worker.jsonl --approved
 ```
 
+API (minimal control plane):
+
+```bash
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl
+```
+
+Quick test:
+
+```bash
+curl -s http://127.0.0.1:8090/ready
+curl -s "http://127.0.0.1:8090/health/run?env=test"
+curl -s -X POST http://127.0.0.1:8090/actions/run \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"check_host_health","approved":true,"actor":"local-dev"}'
+```
+
