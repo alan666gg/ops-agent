@@ -1,0 +1,4 @@
+{"time":"2026-03-18T05:20:12.033745253Z","actor":"ops-scheduler","action":"health_cycle","target":"test/host_basics","status":"ok","message":"OK: host toolchain present"}
+{"time":"2026-03-18T05:20:12.033828248Z","actor":"ops-scheduler","action":"health_cycle","target":"test/http_health","status":"ok","message":"OK: service reachable"}
+{"time":"2026-03-18T05:20:12.033833816Z","actor":"ops-scheduler","action":"health_cycle","target":"test/dep_tcp","status":"ok","message":"OK: dependency reachable"}
+{"time":"2026-03-18T05:20:12.033837712Z","actor":"ops-scheduler","action":"health_cycle","target":"test/dep_tcp","status":"ok","message":"OK: dependency reachable"}
