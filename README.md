@@ -56,10 +56,20 @@ Quick test:
 ```bash
 curl -s http://127.0.0.1:8090/ready
 curl -s "http://127.0.0.1:8090/health/run?env=test" -H "Authorization: Bearer $OPS_API_TOKEN"
-curl -s -X POST http://127.0.0.1:8090/actions/run \
+
+# request approval-required action
+REQ_ID=$(curl -s -X POST http://127.0.0.1:8090/actions/request \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $OPS_API_TOKEN" \
-  -d '{"action":"check_host_health","approved":true,"actor":"local-dev"}'
+  -d '{"action":"restart_container","args":["cicdtest-app"],"actor":"local-dev"}' | jq -r .request_id)
+
+# list pending and approve
+curl -s "http://127.0.0.1:8090/actions/pending" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s -X POST http://127.0.0.1:8090/actions/approve \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -d "{\"request_id\":\"$REQ_ID\",\"approver\":\"ops-admin\"}"
+
 curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60" -H "Authorization: Bearer $OPS_API_TOKEN"
 ```
 

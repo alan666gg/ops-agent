@@ -1,0 +1,16 @@
+[
+  {
+    "id": "req_7b4ac5fe7802a925",
+    "action": "restart_container",
+    "args": [
+      "cicdtest-app"
+    ],
+    "actor": "dev-a",
+    "requires_approval": true,
+    "status": "executed",
+    "approver": "ops-admin",
+    "result": "cicdtest-app\n[ok] restarted cicdtest-app",
+    "created_at": "2026-03-18T05:37:54.706804732Z",
+    "updated_at": "2026-03-18T05:37:54.991439671Z"
+  }
+]

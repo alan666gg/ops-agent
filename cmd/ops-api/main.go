@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,8 +12,10 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/alan666gg/ops-agent/internal/approval"
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
@@ -25,6 +29,8 @@ type server struct {
 	auditFile      string
 	token          string
 	allowedActions map[string]bool
+	approvalStore  approval.Store
+	mu             sync.Mutex
 }
 
 type actionRequest struct {
@@ -33,6 +39,18 @@ type actionRequest struct {
 	Approved bool     `json:"approved"`
 	Actor    string   `json:"actor"`
 	TimeoutS int      `json:"timeout_seconds"`
+}
+
+type requestActionResponse struct {
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+type approveRequest struct {
+	RequestID string `json:"request_id"`
+	Approver  string `json:"approver"`
+	TimeoutS  int    `json:"timeout_seconds"`
 }
 
 type actionResponse struct {
@@ -54,6 +72,7 @@ func main() {
 	envFile := flag.String("env-file", "configs/environments.yaml", "path to environments yaml")
 	policyFile := flag.String("policy", "configs/policies.yaml", "path to policy yaml")
 	auditFile := flag.String("audit", "audit/api.jsonl", "audit output jsonl")
+	pendingFile := flag.String("pending-file", "audit/pending-actions.json", "pending approval requests store")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	flag.Parse()
 
@@ -63,6 +82,9 @@ func main() {
 		policyFile: *policyFile,
 		auditFile:  *auditFile,
 		token:      strings.TrimSpace(*token),
+		approvalStore: approval.Store{
+			Path: *pendingFile,
+		},
 		allowedActions: map[string]bool{
 			"check_host_health":    true,
 			"check_service_health": true,
@@ -75,6 +97,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health/run", s.handleRunHealth)
 	mux.HandleFunc("/actions/run", s.handleRunAction)
+	mux.HandleFunc("/actions/request", s.handleRequestAction)
+	mux.HandleFunc("/actions/approve", s.handleApproveAction)
+	mux.HandleFunc("/actions/pending", s.handlePendingActions)
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
@@ -164,21 +189,10 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		} else if rs.Severity == checks.SeverityWarn && status != "fail" {
 			status = "warn"
 		}
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{
-			Time:    time.Now().UTC(),
-			Actor:   "ops-api",
-			Action:  "health_run",
-			Target:  envName + "/" + rs.Name,
-			Status:  sev,
-			Message: rs.Code + ": " + rs.Message,
-		})
+		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "health_run", Target: envName + "/" + rs.Name, Status: sev, Message: rs.Code + ": " + rs.Message})
 	}
 
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"env":     envName,
-		"status":  status,
-		"results": results,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"env": envName, "status": status, "results": results})
 }
 
 func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
@@ -228,15 +242,11 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 	if requiresApproval && !req.Approved {
 		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Status: "approval_required", Message: "approval required", RequiresOK: true})
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(actionResponse{Status: "approval_required", Message: "approval required"})
+		_ = json.NewEncoder(w).Encode(actionResponse{Status: "approval_required", Message: "approval required (use /actions/request + /actions/approve)"})
 		return
 	}
 
-	timeout := 30 * time.Second
-	if req.TimeoutS > 0 {
-		timeout = time.Duration(req.TimeoutS) * time.Second
-	}
-	res := rbexec.RunAction(context.Background(), req.Action, req.Args, timeout)
+	res := runAction(req.Action, req.Args, req.TimeoutS)
 	status := "ok"
 	message := "action executed"
 	if res.Err != nil {
@@ -249,6 +259,170 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	}
 	_ = json.NewEncoder(w).Encode(actionResponse{Status: status, Message: message, ExitCode: res.ExitCode, Output: res.Output})
+}
+
+func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req actionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Action) == "" {
+		http.Error(w, `{"error":"action required"}`, http.StatusBadRequest)
+		return
+	}
+	if !s.allowedActions[req.Action] {
+		http.Error(w, `{"error":"action not in api allowlist"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Actor == "" {
+		req.Actor = "ops-api"
+	}
+	cfg, err := policy.Load(s.policyFile)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	allowed, requiresApproval := cfg.ActionAllowed(req.Action)
+	if !allowed {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(requestActionResponse{Status: "denied", Message: "action denied by policy"})
+		return
+	}
+
+	rid := newID()
+	now := time.Now().UTC()
+	entry := approval.Request{
+		ID:               rid,
+		Action:           req.Action,
+		Args:             req.Args,
+		Actor:            req.Actor,
+		RequiresApproval: requiresApproval,
+		Status:           "pending",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	s.mu.Lock()
+	err = s.approvalStore.Create(entry)
+	s.mu.Unlock()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: now, Actor: req.Actor, Action: req.Action, Status: "pending", Message: "action request created", RequiresOK: requiresApproval})
+
+	if !requiresApproval {
+		// auto execute for low-risk actions
+		res := runAction(req.Action, req.Args, req.TimeoutS)
+		newStatus := "executed"
+		result := strings.TrimSpace(res.Output)
+		if res.Err != nil {
+			newStatus = "failed"
+			if result == "" {
+				result = res.Err.Error()
+			}
+		}
+		s.mu.Lock()
+		_, _ = s.approvalStore.Update(rid, func(r *approval.Request) error {
+			r.Status = newStatus
+			r.Result = result
+			return nil
+		})
+		s.mu.Unlock()
+		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: req.Action, Status: newStatus, Message: result})
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(requestActionResponse{Status: newStatus, Message: result, RequestID: rid})
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(requestActionResponse{Status: "pending", Message: "awaiting approval", RequestID: rid})
+}
+
+func (s *server) handleApproveAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req approveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.RequestID) == "" {
+		http.Error(w, `{"error":"request_id required"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Approver == "" {
+		req.Approver = "ops-approver"
+	}
+
+	s.mu.Lock()
+	entry, err := s.approvalStore.Update(req.RequestID, func(r *approval.Request) error {
+		if r.Status != "pending" {
+			return fmt.Errorf("request is not pending")
+		}
+		r.Status = "approved"
+		r.Approver = req.Approver
+		return nil
+	})
+	s.mu.Unlock()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	res := runAction(entry.Action, entry.Args, req.TimeoutS)
+	finalStatus := "executed"
+	result := strings.TrimSpace(res.Output)
+	if res.Err != nil {
+		finalStatus = "failed"
+		if result == "" {
+			result = res.Err.Error()
+		}
+	}
+
+	s.mu.Lock()
+	_, _ = s.approvalStore.Update(entry.ID, func(r *approval.Request) error {
+		r.Status = finalStatus
+		r.Result = result
+		r.Approver = req.Approver
+		return nil
+	})
+	s.mu.Unlock()
+
+	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Status: finalStatus, Message: result, RequiresOK: entry.RequiresApproval})
+	if res.Err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+	}
+	_ = json.NewEncoder(w).Encode(actionResponse{Status: finalStatus, Message: "approval processed", ExitCode: res.ExitCode, Output: res.Output})
+}
+
+func (s *server) handlePendingActions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+		if limit <= 0 || limit > 500 {
+			limit = 50
+		}
+	}
+	s.mu.Lock()
+	items, err := s.approvalStore.ListPending(limit)
+	s.mu.Unlock()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(items), "items": items})
 }
 
 func (s *server) handleTailAudit(w http.ResponseWriter, r *http.Request) {
@@ -353,4 +527,18 @@ func topN(m map[string]int, n int) []string {
 		out = append(out, fmt.Sprintf("%s (%d)", x.K, x.V))
 	}
 	return out
+}
+
+func newID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return "req_" + hex.EncodeToString(b)
+}
+
+func runAction(action string, args []string, timeoutS int) rbexec.Result {
+	timeout := 30 * time.Second
+	if timeoutS > 0 {
+		timeout = time.Duration(timeoutS) * time.Second
+	}
+	return rbexec.RunAction(context.Background(), action, args, timeout)
 }

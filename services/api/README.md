@@ -13,6 +13,9 @@ Endpoints:
 
 - `GET /ready` (no token)
 - `GET /health/run?env=test` (Bearer token)
-- `POST /actions/run` (Bearer token)
+- `POST /actions/run` (Bearer token; direct mode)
+- `POST /actions/request` (Bearer token; creates approval ticket)
+- `GET /actions/pending` (Bearer token)
+- `POST /actions/approve` (Bearer token)
 - `GET /audit/tail?limit=50` (Bearer token)
 - `GET /incidents/summary?minutes=60` (Bearer token)
