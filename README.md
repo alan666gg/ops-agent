@@ -112,6 +112,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - Production guardrails apply when `env=prod` or `env=production`.
 - `policies.production.require_human_approval=true` upgrades otherwise-safe actions to approval-required in production.
 - `policies.production.max_auto_actions_per_hour` limits unattended production actions per hour; excess requests are converted to approval-required.
+- `policies.forbidden_commands` now blocks actions whose runbook content contains a forbidden command token.
 - `GET /audit/tail` only reads `.jsonl` files inside the configured audit directory.
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
 - Environment health checks run concurrently while keeping a stable output order.

@@ -75,6 +75,9 @@ func (c Config) Evaluate(action, env string, recentAutoActions int) Decision {
 	if !allowed {
 		return Decision{Allowed: false, Reason: "action denied by policy"}
 	}
+	if err := c.ValidateRunbookAction(action); err != nil {
+		return Decision{Allowed: false, Reason: err.Error()}
+	}
 	if requiresApproval {
 		return Decision{Allowed: true, RequiresApproval: true, Reason: "action requires approval by policy"}
 	}
@@ -92,6 +95,40 @@ func (c Config) Evaluate(action, env string, recentAutoActions int) Decision {
 func (c Config) isProductionEnv(env string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(env))
 	return normalized == "prod" || normalized == "production"
+}
+
+func (c Config) ValidateRunbookAction(action string) error {
+	if len(c.Policies.ForbiddenCommands) == 0 {
+		return nil
+	}
+	spec, ok := actions.Lookup(action)
+	if !ok {
+		return fmt.Errorf("unknown action: %s", action)
+	}
+	if len(spec.Runbook) < 2 || spec.Runbook[0] != "bash" {
+		return nil
+	}
+	script, err := os.ReadFile(spec.Runbook[1])
+	if err != nil {
+		return fmt.Errorf("read runbook for %q: %w", action, err)
+	}
+	if token := forbiddenMatch(string(script), c.Policies.ForbiddenCommands); token != "" {
+		return fmt.Errorf("runbook %q blocked by forbidden command %q", action, token)
+	}
+	return nil
+}
+
+func forbiddenMatch(content string, forbidden []string) string {
+	for _, token := range forbidden {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if strings.Contains(content, token) {
+			return token
+		}
+	}
+	return ""
 }
 
 func (c Config) ActionAllowed(action string) (bool, bool) {

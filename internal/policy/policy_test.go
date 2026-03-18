@@ -71,3 +71,21 @@ func TestEvaluateRequiresApprovalWhenAutoLimitReached(t *testing.T) {
 		t.Fatalf("expected auto action limit to require approval, got %+v", decision)
 	}
 }
+
+func TestForbiddenMatch(t *testing.T) {
+	got := forbiddenMatch("echo ok\nrm -rf /\n", []string{"rm -rf /", "shutdown -h now"})
+	if got != "rm -rf /" {
+		t.Fatalf("expected forbidden token, got %q", got)
+	}
+}
+
+func TestEvaluateDeniesForbiddenRunbook(t *testing.T) {
+	cfg := Config{}
+	cfg.Policies.AutoActions.Allowed = []string{"check_host_health"}
+	cfg.Policies.ForbiddenCommands = []string{"uptime"}
+
+	decision := cfg.Evaluate("check_host_health", "test", 0)
+	if decision.Allowed {
+		t.Fatalf("expected forbidden runbook to be denied, got %+v", decision)
+	}
+}
