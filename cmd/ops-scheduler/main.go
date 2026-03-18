@@ -58,8 +58,7 @@ func main() {
 		fmt.Println("load env config error:", err)
 		os.Exit(1)
 	}
-	env, ok := cfg.Environments[*envName]
-	if !ok {
+	if _, ok := cfg.Environments[*envName]; !ok {
 		fmt.Printf("env %q not found in %s\n", *envName, *envFile)
 		os.Exit(1)
 	}
@@ -90,6 +89,34 @@ func main() {
 	run := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
+
+		cfg, err := config.LoadEnvironments(*envFile)
+		if err != nil {
+			fmt.Printf("load env config error: %v\n", err)
+			_ = audit.AppendJSONL(*auditFile, audit.Event{
+				Time:    time.Now().UTC(),
+				Actor:   "ops-scheduler",
+				Action:  "config_reload",
+				Env:     *envName,
+				Status:  "failed",
+				Message: err.Error(),
+			})
+			return
+		}
+		env, ok := cfg.Environments[*envName]
+		if !ok {
+			msg := fmt.Sprintf("env %q not found in %s", *envName, *envFile)
+			fmt.Println(msg)
+			_ = audit.AppendJSONL(*auditFile, audit.Event{
+				Time:    time.Now().UTC(),
+				Actor:   "ops-scheduler",
+				Action:  "config_reload",
+				Env:     *envName,
+				Status:  "failed",
+				Message: msg,
+			})
+			return
+		}
 
 		results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
 		for _, r := range results {

@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -64,6 +65,20 @@ func LoadEnvironments(path string) (EnvironmentFile, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+func SaveEnvironments(path string, out EnvironmentFile) error {
+	if err := out.Validate(); err != nil {
+		return err
+	}
+	b, err := yaml.Marshal(out)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }
 
 func (f EnvironmentFile) Validate() error {

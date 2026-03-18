@@ -134,3 +134,31 @@ func TestLoadEnvironmentsRejectsInvalidSLOConfig(t *testing.T) {
 		t.Fatal("expected invalid slo validation error")
 	}
 }
+
+func TestSaveEnvironmentsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	input := EnvironmentFile{
+		Environments: map[string]Environment{
+			"prod": {
+				Hosts: []Host{{Name: "app-1", Host: "10.0.0.5", SSHUser: "root", SSHPort: 22}},
+				Services: []Service{{
+					Name:           "api",
+					Host:           "app-1",
+					Type:           "container",
+					ContainerName:  "api",
+					HealthcheckURL: "http://10.0.0.5:8080/healthz",
+				}},
+			},
+		},
+	}
+	if err := SaveEnvironments(path, input); err != nil {
+		t.Fatal(err)
+	}
+	output, err := LoadEnvironments(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Environments["prod"].Services) != 1 || output.Environments["prod"].Services[0].Name != "api" {
+		t.Fatalf("unexpected output: %+v", output)
+	}
+}

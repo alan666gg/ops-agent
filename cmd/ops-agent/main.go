@@ -46,7 +46,7 @@ func usage() {
 	fmt.Println("ops-agent commands:")
 	fmt.Println("  health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1:6379")
 	fmt.Println("  policy --action <" + strings.Join(actions.Names(), "|") + "> --env test --policy configs/policies.yaml --audit audit.jsonl")
-	fmt.Println("  discover --env-file configs/environments.yaml --env test --host test-app-1 --format yaml")
+	fmt.Println("  discover --env-file configs/environments.yaml --env test --host test-app-1 --format yaml --apply")
 	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml")
 }
 
@@ -195,6 +195,9 @@ func runDiscover(args []string) {
 	format := fs.String("format", "yaml", "output format: yaml|json")
 	timeout := fs.Duration("timeout", 30*time.Second, "ssh discovery timeout")
 	outPath := fs.String("out", "", "optional output file path (defaults to stdout)")
+	apply := fs.Bool("apply", false, "merge discovered container services into the selected environment config")
+	healthPaths := fs.String("health-paths", "/healthz,/health,/", "candidate HTTP paths used when auto-probing discovered services")
+	probeTimeout := fs.Duration("probe-timeout", 1500*time.Millisecond, "timeout for probing candidate healthcheck URLs during --apply")
 	_ = fs.Parse(args)
 
 	if strings.TrimSpace(*hostName) == "" {
@@ -221,6 +224,28 @@ func runDiscover(args []string) {
 	if err != nil {
 		fmt.Println("discovery failed:", err)
 		os.Exit(1)
+	}
+	if *apply {
+		envCopy := env
+		result := discovery.ApplyReport(context.Background(), &envCopy, report, discovery.ApplyOptions{
+			HealthPaths:  splitCSV(*healthPaths),
+			ProbeTimeout: *probeTimeout,
+		})
+		cfg.Environments[*envName] = envCopy
+		if err := config.SaveEnvironments(*envFile, cfg); err != nil {
+			fmt.Println("save environment config error:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("applied discovery to %s env=%s host=%s: added=%d updated=%d skipped=%d\n", *envFile, *envName, host.Name, len(result.Added), len(result.Updated), len(result.Skipped))
+		for _, svc := range result.Added {
+			fmt.Printf("  added service %s container=%s health=%s\n", svc.Name, svc.ContainerName, defaultString(svc.HealthcheckURL, "(none)"))
+		}
+		for _, svc := range result.Updated {
+			fmt.Printf("  updated service %s health=%s\n", svc.Name, defaultString(svc.HealthcheckURL, "(none)"))
+		}
+		if len(result.Skipped) > 0 {
+			fmt.Printf("  skipped existing candidates: %s\n", strings.Join(result.Skipped, ", "))
+		}
 	}
 	var payload []byte
 	switch strings.ToLower(strings.TrimSpace(*format)) {
@@ -249,6 +274,13 @@ func runDiscover(args []string) {
 		return
 	}
 	fmt.Println(string(payload))
+}
+
+func defaultString(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
 }
 
 func splitCSV(s string) []string {
