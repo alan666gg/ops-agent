@@ -1,0 +1,132 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/alan666gg/ops-agent/internal/audit"
+	"github.com/alan666gg/ops-agent/internal/checks"
+	"github.com/alan666gg/ops-agent/internal/policy"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(1)
+	}
+
+	switch os.Args[1] {
+	case "health":
+		runHealth(os.Args[2:])
+	case "policy":
+		runPolicy(os.Args[2:])
+	default:
+		usage()
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Println("ops-agent commands:")
+	fmt.Println("  health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1:6379")
+	fmt.Println("  policy --action restart_container --policy configs/policies.yaml --audit audit.jsonl")
+}
+
+func runHealth(args []string) {
+	fs := flag.NewFlagSet("health", flag.ExitOnError)
+	url := fs.String("url", "", "http endpoint to check")
+	dep := fs.String("dep", "", "dependency in format name:host:port, comma-separated")
+	_ = fs.Parse(args)
+
+	items := []checks.Checker{checks.HostChecker{}}
+	if *url != "" {
+		items = append(items, checks.HTTPChecker{TargetURL: *url})
+	}
+	for _, d := range splitCSV(*dep) {
+		p := strings.Split(d, ":")
+		if len(p) != 3 {
+			continue
+		}
+		items = append(items, checks.TCPChecker{NameLabel: p[0], Host: p[1], Port: p[2]})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	results := checks.NewRegistry(items...).RunAll(ctx)
+	failed := false
+	for _, r := range results {
+		fmt.Printf("[%s] code=%s severity=%s msg=%s\n", r.Name, r.Code, r.Severity, r.Message)
+		if r.Severity == checks.SeverityFail {
+			failed = true
+		}
+	}
+	if failed {
+		os.Exit(2)
+	}
+}
+
+func runPolicy(args []string) {
+	fs := flag.NewFlagSet("policy", flag.ExitOnError)
+	action := fs.String("action", "", "action name")
+	policyFile := fs.String("policy", "configs/policies.yaml", "policy file")
+	auditFile := fs.String("audit", "audit/events.jsonl", "audit jsonl file")
+	actor := fs.String("actor", "ops-agent", "actor name")
+	_ = fs.Parse(args)
+
+	if *action == "" {
+		fmt.Println("action is required")
+		os.Exit(1)
+	}
+
+	cfg, err := policy.Load(*policyFile)
+	if err != nil {
+		fmt.Println("load policy error:", err)
+		os.Exit(1)
+	}
+
+	allowed, requires := cfg.ActionAllowed(*action)
+	status := "allowed"
+	msg := "action allowed"
+	if !allowed {
+		status = "denied"
+		msg = "action denied by policy"
+	} else if requires {
+		status = "approval_required"
+		msg = "action requires approval"
+	}
+
+	fmt.Printf("policy result: %s (%s)\n", status, msg)
+	_ = os.MkdirAll("audit", 0o755)
+	_ = audit.AppendJSONL(*auditFile, audit.Event{
+		Time:       time.Now().UTC(),
+		Actor:      *actor,
+		Action:     *action,
+		Status:     status,
+		Message:    msg,
+		RequiresOK: requires,
+	})
+
+	if status != "allowed" {
+		os.Exit(3)
+	}
+}
+
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	raw := strings.Split(s, ",")
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
