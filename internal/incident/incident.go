@@ -118,6 +118,21 @@ func BuildSuppressions(env config.Environment, results []checks.Result) map[stri
 		}
 	}
 
+	for _, host := range env.Hosts {
+		root, ok := hostFailures[host.Name]
+		if !ok {
+			continue
+		}
+		out["host_resource_"+sanitizeName(host.Name)] = suppression{
+			SuppressedBy: root.SuppressedBy,
+			Reason:       fmt.Sprintf("resource checks require host %s ssh reachability", host.Name),
+		}
+		out["host_process_"+sanitizeName(host.Name)] = suppression{
+			SuppressedBy: root.SuppressedBy,
+			Reason:       fmt.Sprintf("process checks require host %s ssh reachability", host.Name),
+		}
+	}
+
 	for key, hostName := range dependencyHosts(env) {
 		root, ok := hostFailures[hostName]
 		if !ok {
@@ -142,7 +157,10 @@ func BuildSuggestions(envName string, env config.Environment, results []checks.R
 		serviceByKey["service_"+sanitizeName(svc.Name)] = svc
 	}
 	for _, host := range env.Hosts {
-		hostByKey["host_ssh_"+sanitizeName(host.Name)] = host
+		suffix := sanitizeName(host.Name)
+		hostByKey["host_ssh_"+suffix] = host
+		hostByKey["host_resource_"+suffix] = host
+		hostByKey["host_process_"+suffix] = host
 	}
 	for _, dep := range env.Dependencies {
 		dep = strings.TrimSpace(dep)

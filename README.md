@@ -58,9 +58,19 @@ The scheduler/API health pass now includes:
 
 - local agent host basics
 - SSH reachability for each host declared under `environments.<env>.hosts`
+- remote host resource checks over SSH for load-per-cpu, memory, disk, and inode usage
+- optional remote process watchlists from `hosts[].checks.required_processes`
 - service HTTP checks from `services[].healthcheck_url`
 - HTTP/TCP dependency checks from `dependencies[]`
 - optional history-backed SLO burn-rate checks from `services[].slo`
+
+Host-level SSH resource checks are configured under `hosts[].checks` in [configs/environments.yaml](/Users/zhangza/code/agent/ops-agent/configs/environments.yaml). If you omit them, the control plane uses sensible defaults:
+
+- `load_warn_per_cpu=1.5`, `load_fail_per_cpu=2.5`
+- `memory_warn_percent=85`, `memory_fail_percent=95`
+- `disk_warn_percent=80`, `disk_fail_percent=90`
+- `inode_warn_percent=80`, `inode_fail_percent=90`
+- `filesystem_path=/`
 
 Service discovery is now a low-frequency companion step to the scheduler. `ops-agent discover` can SSH into a declared host, list Docker containers, running systemd services, and TCP listeners, then either output a candidate inventory or, with `--apply`, merge newly found services into `configs/environments.yaml` and auto-probe common health paths such as `/healthz`, `/health`, and `/`.
 When a discovered service has no confirmed HTTP health endpoint, the control plane now falls back to the best available check primitive:
@@ -183,6 +193,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
 - `ops-agent discover --apply` only appends or enriches discovered services; it does not delete existing services or rewrite unrelated hosts.
 - `ops-scheduler --discover-interval` runs the same discovery/apply flow on a lower cadence than health checks, so new host services can join the next health cycle without a restart.
+- `host_ssh_*` remains the root-cause gate for host reachability; if SSH is already down, the incident layer suppresses dependent host resource/process checks to avoid duplicate noise.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 - `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.

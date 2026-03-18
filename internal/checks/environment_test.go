@@ -11,7 +11,7 @@ import (
 func TestCheckersForEnvironmentIncludesHostsServicesAndDependencies(t *testing.T) {
 	env := config.Environment{
 		Hosts: []config.Host{
-			{Name: "app-1", Host: "10.0.0.5", SSHPort: 2222},
+			{Name: "app-1", Host: "10.0.0.5", SSHPort: 2222, Checks: config.HostChecks{RequiredProcesses: []string{"nginx"}}},
 			{Name: "app-2", Host: "10.0.0.6"},
 		},
 		Services: []config.Service{
@@ -26,8 +26,8 @@ func TestCheckersForEnvironmentIncludesHostsServicesAndDependencies(t *testing.T
 	}
 
 	items := CheckersForEnvironment(env)
-	if len(items) != 8 {
-		t.Fatalf("expected 8 checks, got %d", len(items))
+	if len(items) != 11 {
+		t.Fatalf("expected 11 checks, got %d", len(items))
 	}
 
 	names := make([]string, 0, len(items))
@@ -39,6 +39,9 @@ func TestCheckersForEnvironmentIncludesHostsServicesAndDependencies(t *testing.T
 		"host_basics":                        true,
 		"host_ssh_app_1":                     true,
 		"host_ssh_app_2":                     true,
+		"host_resource_app_1":                true,
+		"host_resource_app_2":                true,
+		"host_process_app_1":                 true,
 		"service_api":                        true,
 		"service_redis":                      true,
 		"service_worker":                     true,

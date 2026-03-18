@@ -24,10 +24,24 @@ type Environment struct {
 }
 
 type Host struct {
-	Name    string `yaml:"name"`
-	Host    string `yaml:"host"`
-	SSHUser string `yaml:"ssh_user"`
-	SSHPort int    `yaml:"ssh_port"`
+	Name    string     `yaml:"name"`
+	Host    string     `yaml:"host"`
+	SSHUser string     `yaml:"ssh_user"`
+	SSHPort int        `yaml:"ssh_port"`
+	Checks  HostChecks `yaml:"checks,omitempty"`
+}
+
+type HostChecks struct {
+	LoadWarnPerCPU    float64  `yaml:"load_warn_per_cpu,omitempty"`
+	LoadFailPerCPU    float64  `yaml:"load_fail_per_cpu,omitempty"`
+	MemoryWarnPercent float64  `yaml:"memory_warn_percent,omitempty"`
+	MemoryFailPercent float64  `yaml:"memory_fail_percent,omitempty"`
+	DiskWarnPercent   float64  `yaml:"disk_warn_percent,omitempty"`
+	DiskFailPercent   float64  `yaml:"disk_fail_percent,omitempty"`
+	InodeWarnPercent  float64  `yaml:"inode_warn_percent,omitempty"`
+	InodeFailPercent  float64  `yaml:"inode_fail_percent,omitempty"`
+	FilesystemPath    string   `yaml:"filesystem_path,omitempty"`
+	RequiredProcesses []string `yaml:"required_processes,omitempty"`
 }
 
 type Service struct {
@@ -117,6 +131,9 @@ func (e Environment) Validate(envName string) error {
 		}
 		if host.SSHPort < 0 || host.SSHPort > 65535 {
 			return fmt.Errorf("environment %q host %q has invalid ssh_port %d", envName, host.Name, host.SSHPort)
+		}
+		if err := host.Checks.Validate(envName, host); err != nil {
+			return err
 		}
 	}
 
@@ -224,6 +241,68 @@ func (s ServiceSLO) Enabled() bool {
 	return s.AvailabilityTarget > 0
 }
 
+func (h HostChecks) WithDefaults() HostChecks {
+	if h.LoadWarnPerCPU <= 0 {
+		h.LoadWarnPerCPU = 1.5
+	}
+	if h.LoadFailPerCPU <= 0 {
+		h.LoadFailPerCPU = 2.5
+	}
+	if h.MemoryWarnPercent <= 0 {
+		h.MemoryWarnPercent = 85
+	}
+	if h.MemoryFailPercent <= 0 {
+		h.MemoryFailPercent = 95
+	}
+	if h.DiskWarnPercent <= 0 {
+		h.DiskWarnPercent = 80
+	}
+	if h.DiskFailPercent <= 0 {
+		h.DiskFailPercent = 90
+	}
+	if h.InodeWarnPercent <= 0 {
+		h.InodeWarnPercent = 80
+	}
+	if h.InodeFailPercent <= 0 {
+		h.InodeFailPercent = 90
+	}
+	if strings.TrimSpace(h.FilesystemPath) == "" {
+		h.FilesystemPath = "/"
+	}
+	return h
+}
+
+func (h HostChecks) Validate(envName string, host Host) error {
+	h = h.WithDefaults()
+	if h.LoadWarnPerCPU <= 0 || h.LoadFailPerCPU <= 0 || h.LoadWarnPerCPU >= h.LoadFailPerCPU {
+		return fmt.Errorf("environment %q host %q has invalid load per cpu thresholds", envName, host.Name)
+	}
+	if err := validatePercentThresholds(envName, host.Name, "memory", h.MemoryWarnPercent, h.MemoryFailPercent); err != nil {
+		return err
+	}
+	if err := validatePercentThresholds(envName, host.Name, "disk", h.DiskWarnPercent, h.DiskFailPercent); err != nil {
+		return err
+	}
+	if err := validatePercentThresholds(envName, host.Name, "inode", h.InodeWarnPercent, h.InodeFailPercent); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(strings.TrimSpace(h.FilesystemPath), "/") {
+		return fmt.Errorf("environment %q host %q filesystem_path must be absolute", envName, host.Name)
+	}
+	seen := map[string]bool{}
+	for _, process := range h.RequiredProcesses {
+		process = strings.TrimSpace(process)
+		if process == "" {
+			return fmt.Errorf("environment %q host %q has empty required_processes entry", envName, host.Name)
+		}
+		if seen[process] {
+			return fmt.Errorf("environment %q host %q has duplicate required_processes entry %q", envName, host.Name, process)
+		}
+		seen[process] = true
+	}
+	return nil
+}
+
 func (s ServiceSLO) WithDefaults() ServiceSLO {
 	if !s.Enabled() {
 		return s
@@ -277,6 +356,13 @@ func (s ServiceSLO) Validate(envName string, svc Service) error {
 	}
 	if s.MinSamples < 1 {
 		return fmt.Errorf("environment %q service %q min_samples must be >= 1", envName, svc.Name)
+	}
+	return nil
+}
+
+func validatePercentThresholds(envName, hostName, label string, warn, fail float64) error {
+	if warn <= 0 || fail <= 0 || warn >= fail || warn > 100 || fail > 100 {
+		return fmt.Errorf("environment %q host %q has invalid %s percent thresholds", envName, hostName, label)
 	}
 	return nil
 }

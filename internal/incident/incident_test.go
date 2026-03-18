@@ -20,6 +20,7 @@ func TestBuildSuggestionsForServiceAndHostFailures(t *testing.T) {
 	}
 	results := []checks.Result{
 		{Name: "host_ssh_app_1", Severity: checks.SeverityFail, Message: "connection refused"},
+		{Name: "host_resource_app_1", Severity: checks.SeverityFail, Message: "load/cpu=3.10"},
 		{Name: "service_api", Severity: checks.SeverityFail, Message: "status=500"},
 		{Name: "dependency_tcp_10_0_0_5_6379", Severity: checks.SeverityWarn, Message: "slow"},
 	}
@@ -40,10 +41,10 @@ func TestBuildSuggestionsForServiceAndHostFailures(t *testing.T) {
 	if got := found["check_host_health|app-1"]; got.TargetHost != "app-1" {
 		t.Fatalf("missing host suggestion: %#v", suggestions)
 	}
-	if report.FailCount != 1 || report.WarnCount != 0 || report.SuppressedCount != 2 {
+	if report.FailCount != 1 || report.WarnCount != 0 || report.SuppressedCount != 3 {
 		t.Fatalf("unexpected report counts: %+v", report)
 	}
-	if len(report.SuppressedChecks) != 2 {
+	if len(report.SuppressedChecks) != 3 {
 		t.Fatalf("expected suppressed downstream checks, got %+v", report.SuppressedChecks)
 	}
 }
@@ -77,6 +78,8 @@ func TestBuildReportSuppressesDownstreamChecksByHostFailure(t *testing.T) {
 	}
 	results := []checks.Result{
 		{Name: "host_ssh_app_1", Code: "TCP_UNREACHABLE", Severity: checks.SeverityFail, Message: "connection refused"},
+		{Name: "host_resource_app_1", Code: "HOST_RESOURCE_FAIL", Severity: checks.SeverityFail, Message: "load/cpu=3.2"},
+		{Name: "host_process_app_1", Code: "HOST_PROCESS_MISSING", Severity: checks.SeverityFail, Message: "missing nginx"},
 		{Name: "service_api", Code: "HTTP_DOWN", Severity: checks.SeverityFail, Message: "connection refused"},
 		{Name: "dependency_tcp_10_0_0_5_6379", Code: "TCP_UNREACHABLE", Severity: checks.SeverityFail, Message: "connection refused"},
 		{Name: "dependency_http_example_com_health", Code: "HTTP_BAD_STATUS", Severity: checks.SeverityWarn, Message: "status=503"},
@@ -86,7 +89,7 @@ func TestBuildReportSuppressesDownstreamChecksByHostFailure(t *testing.T) {
 	if report.Status != "fail" {
 		t.Fatalf("expected root-cause fail status, got %s", report.Status)
 	}
-	if report.FailCount != 1 || report.WarnCount != 1 || report.SuppressedCount != 2 {
+	if report.FailCount != 1 || report.WarnCount != 1 || report.SuppressedCount != 4 {
 		t.Fatalf("unexpected counts: %+v", report)
 	}
 	if len(report.FailedChecks) != 1 || report.FailedChecks[0].Name != "host_ssh_app_1" {

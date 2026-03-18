@@ -12,8 +12,10 @@
 - Action definitions are centralized in a shared registry.
 - Runbooks execute locally by default and can be sent over SSH to a configured environment host.
 - Environment health checks cover local agent basics, configured host SSH reachability, service endpoints, and dependencies.
+- Host declarations can now carry `checks` thresholds, so the control plane also evaluates remote host load, memory, disk, inode, and optional required-process health over SSH.
 - Host discovery is SSH-based and produces a candidate inventory of containers, systemd services, and listeners. With explicit `--apply`, it can append or enrich discovered services in the declarative environment config, and the scheduler can now run the same flow on a lower-frequency `--discover-interval` while still reloading config every health cycle.
 - Auto-applied services use the strongest available probe in this order: HTTP health URL, discovered TCP listener port, then `systemctl is-active` over SSH for systemd-only units.
+- Host SSH reachability remains the suppression root for host-scoped checks, so a dead host does not also generate separate resource/process incidents.
 - Policy evaluation can deny an action when its runbook content matches a configured forbidden command token.
 - Health incidents can be summarized into action suggestions and sent through webhook, Slack, or Telegram notifiers.
 - Notification state is persisted so duplicate incidents, flapping checks, and recoveries can be handled with consecutive-sample thresholds.

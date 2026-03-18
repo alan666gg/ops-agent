@@ -5,6 +5,16 @@ environments:
         host: 127.0.0.1
         ssh_user: root
         ssh_port: 22
+        checks:
+          load_warn_per_cpu: 1.5
+          load_fail_per_cpu: 2.5
+          memory_warn_percent: 85
+          memory_fail_percent: 95
+          disk_warn_percent: 80
+          disk_fail_percent: 90
+          inode_warn_percent: 80
+          inode_fail_percent: 90
+          filesystem_path: /
     services:
       - name: app
         host: test-app-1

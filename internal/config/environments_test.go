@@ -54,6 +54,10 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
         host: 127.0.0.1
         ssh_user: root
         ssh_port: 22
+        checks:
+          filesystem_path: /
+          required_processes:
+            - nginx
     services:
       - name: api
         host: app-1
@@ -84,6 +88,10 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	slo := cfg.Environments["test"].Services[0].SLO.WithDefaults()
 	if slo.PageBurnRate != 10 || slo.TicketBurnRate != 2 || slo.MinSamples != 4 {
 		t.Fatalf("unexpected slo defaults: %+v", slo)
+	}
+	hostChecks := cfg.Environments["test"].Hosts[0].Checks.WithDefaults()
+	if hostChecks.LoadWarnPerCPU != 1.5 || hostChecks.MemoryFailPercent != 95 || len(hostChecks.RequiredProcesses) != 1 {
+		t.Fatalf("unexpected host check defaults: %+v", hostChecks)
 	}
 }
 
@@ -132,6 +140,33 @@ func TestLoadEnvironmentsRejectsInvalidSLOConfig(t *testing.T) {
 	_, err := LoadEnvironments(path)
 	if err == nil {
 		t.Fatal("expected invalid slo validation error")
+	}
+}
+
+func TestLoadEnvironmentsRejectsInvalidHostChecks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+        checks:
+          load_warn_per_cpu: 3
+          load_fail_per_cpu: 2
+          filesystem_path: var/log
+          required_processes:
+            - nginx
+            - nginx
+    services: []
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadEnvironments(path)
+	if err == nil {
+		t.Fatal("expected invalid host checks validation error")
 	}
 }
 

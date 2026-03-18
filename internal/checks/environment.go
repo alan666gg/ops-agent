@@ -14,6 +14,7 @@ func CheckersForEnvironment(env config.Environment) []Checker {
 
 	for _, host := range env.Hosts {
 		hostsByName[host.Name] = host
+		hostChecks := host.Checks.WithDefaults()
 		port := host.SSHPort
 		if port <= 0 {
 			port = 22
@@ -23,6 +24,18 @@ func CheckersForEnvironment(env config.Environment) []Checker {
 			Host:      host.Host,
 			Port:      strconv.Itoa(port),
 		})
+		items = append(items, RemoteHostResourceChecker{
+			NameLabel: "host_resource_" + sanitizeName(host.Name),
+			Host:      host,
+			Checks:    hostChecks,
+		})
+		if len(hostChecks.RequiredProcesses) > 0 {
+			items = append(items, RemoteProcessChecker{
+				NameLabel: "host_process_" + sanitizeName(host.Name),
+				Host:      host,
+				Processes: hostChecks.RequiredProcesses,
+			})
+		}
 	}
 
 	for _, svc := range env.Services {
