@@ -47,8 +47,10 @@ The scheduler/API health pass now includes:
 - SSH reachability for each host declared under `environments.<env>.hosts`
 - service HTTP checks from `services[].healthcheck_url`
 - HTTP/TCP dependency checks from `dependencies[]`
+- optional history-backed SLO burn-rate checks from `services[].slo`
 
 If a service is tied to a host with `services[].host`, the incident builder can suppress downstream service/dependency symptoms when that host is already down and focus notifications on the root cause.
+If a service defines `services[].slo`, the scheduler/API will also emit synthetic results like `slo_availability_<service>` based on recent audit history and error-budget burn rate.
 
 Worker (policy-gated runbook execution):
 
@@ -123,6 +125,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
+- `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.
 
 ## Notifications
 
@@ -133,3 +136,12 @@ curl -s "http://127.0.0.1:8090/metrics"
 - Active silences and maintenance windows suppress notifications without stopping health checks; if an issue survives the mute window, the controller will deliver it after the window ends.
 - `--notify-trigger-after` and `--notify-recovery-after` let you suppress flapping by requiring consecutive unhealthy or healthy cycles before opening or closing an incident.
 - Health responses now include `summary`, `suggestions`, and `suppressed_checks` so callers can distinguish root causes from downstream symptoms.
+
+## SLO Trends
+
+- Service SLOs are configured inline under `services[].slo` in [configs/environments.yaml](/Users/zhangza/code/agent/ops-agent/configs/environments.yaml).
+- The current implementation tracks availability only and evaluates burn rate over two alert tiers:
+  `page_short_window` + `page_long_window` against `page_burn_rate`
+  `ticket_short_window` + `ticket_long_window` against `ticket_burn_rate`
+- SLO evaluation uses the audit history already written by `ops-api` and `ops-scheduler`, so trend checks improve as the bot runs longer.
+- Synthetic SLO results participate in incident status and notification routing, but they do not create automatic remediation suggestions by themselves.

@@ -12,6 +12,7 @@
 - Notification state is persisted so duplicate incidents, flapping checks, and recoveries can be handled with consecutive-sample thresholds.
 - Routed notification config can suppress alerts with explicit silences or maintenance windows while still evaluating checks underneath.
 - Incident aggregation is topology-aware: host reachability failures can inhibit downstream service/dependency symptoms so operators see root cause first.
+- Services can define availability SLOs so the control plane emits burn-rate trend checks from recent health history, not just point-in-time probes.
 
 Flow:
 1. detect issue

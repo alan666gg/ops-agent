@@ -14,6 +14,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/incident"
 	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
+	"github.com/alan666gg/ops-agent/internal/slo"
 )
 
 func main() {
@@ -91,17 +92,7 @@ func main() {
 		defer cancel()
 
 		results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
-		policyCfg, _ := policy.Load(*policyFile)
-		recentAutoActions, _ := audit.CountRecentAutoActions(*auditFile, *envName, time.Now().UTC().Add(-time.Hour))
-		report := incident.BuildReport("ops-scheduler", *envName, env, results, policyCfg, recentAutoActions)
 		for _, r := range results {
-			status := "ok"
-			if r.Severity == checks.SeverityWarn {
-				status = "warn"
-			}
-			if r.Severity == checks.SeverityFail {
-				status = "fail"
-			}
 			fmt.Printf("[%s] %s %s\n", r.Name, r.Severity, r.Message)
 			_ = audit.AppendJSONL(*auditFile, audit.Event{
 				Time:    time.Now().UTC(),
@@ -109,10 +100,37 @@ func main() {
 				Action:  "health_cycle",
 				Env:     *envName,
 				Target:  *envName + "/" + r.Name,
-				Status:  status,
+				Status:  schedulerResultStatus(r),
 				Message: r.Code + ": " + r.Message,
 			})
 		}
+		if sloResults, err := (slo.Evaluator{}).EvaluateAvailability(*auditFile, *envName, env); err == nil {
+			results = append(results, sloResults...)
+			for _, r := range sloResults {
+				fmt.Printf("[%s] %s %s\n", r.Name, r.Severity, r.Message)
+				_ = audit.AppendJSONL(*auditFile, audit.Event{
+					Time:    time.Now().UTC(),
+					Actor:   "ops-scheduler",
+					Action:  "slo_eval",
+					Env:     *envName,
+					Target:  *envName + "/" + r.Name,
+					Status:  schedulerResultStatus(r),
+					Message: r.Code + ": " + r.Message,
+				})
+			}
+		} else {
+			_ = audit.AppendJSONL(*auditFile, audit.Event{
+				Time:    time.Now().UTC(),
+				Actor:   "ops-scheduler",
+				Action:  "slo_eval",
+				Env:     *envName,
+				Status:  "failed",
+				Message: err.Error(),
+			})
+		}
+		policyCfg, _ := policy.Load(*policyFile)
+		recentAutoActions, _ := audit.CountRecentAutoActions(*auditFile, *envName, time.Now().UTC().Add(-time.Hour))
+		report := incident.BuildReport("ops-scheduler", *envName, env, results, policyCfg, recentAutoActions)
 		if notifyCtl.Enabled() {
 			decision, err := notifyCtl.Process(ctx, report)
 			if err != nil {
@@ -145,5 +163,16 @@ func main() {
 	defer t.Stop()
 	for range t.C {
 		run()
+	}
+}
+
+func schedulerResultStatus(r checks.Result) string {
+	switch r.Severity {
+	case checks.SeverityWarn:
+		return "warn"
+	case checks.SeverityFail:
+		return "fail"
+	default:
+		return "ok"
 	}
 }

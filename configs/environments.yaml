@@ -11,6 +11,15 @@ environments:
         type: container
         container_name: cicdtest-app
         healthcheck_url: http://127.0.0.1:8080/
+        slo:
+          availability_target: 99.9
+          page_short_window: 5m
+          page_long_window: 1h
+          page_burn_rate: 10
+          ticket_short_window: 30m
+          ticket_long_window: 6h
+          ticket_burn_rate: 2
+          min_samples: 4
     dependencies:
       - tcp://127.0.0.1:6379
       - tcp://127.0.0.1:3306

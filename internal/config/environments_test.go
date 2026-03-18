@@ -60,6 +60,12 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
         type: container
         container_name: app-api
         healthcheck_url: http://127.0.0.1:8080/healthz
+        slo:
+          availability_target: 99.9
+          page_short_window: 5m
+          page_long_window: 1h
+          ticket_short_window: 30m
+          ticket_long_window: 6h
     dependencies:
       - tcp://127.0.0.1:6379
       - https://example.com/health
@@ -74,6 +80,10 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	}
 	if len(cfg.Environments) != 1 {
 		t.Fatalf("expected 1 environment, got %d", len(cfg.Environments))
+	}
+	slo := cfg.Environments["test"].Services[0].SLO.WithDefaults()
+	if slo.PageBurnRate != 10 || slo.TicketBurnRate != 2 || slo.MinSamples != 4 {
+		t.Fatalf("unexpected slo defaults: %+v", slo)
 	}
 }
 
@@ -97,5 +107,30 @@ func TestLoadEnvironmentsRejectsUnknownServiceHost(t *testing.T) {
 	_, err := LoadEnvironments(path)
 	if err == nil {
 		t.Fatal("expected unknown service host validation error")
+	}
+}
+
+func TestLoadEnvironmentsRejectsInvalidSLOConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+    services:
+      - name: api
+        host: app-1
+        healthcheck_url: http://10.0.0.5:8080/healthz
+        slo:
+          availability_target: 101
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadEnvironments(path)
+	if err == nil {
+		t.Fatal("expected invalid slo validation error")
 	}
 }

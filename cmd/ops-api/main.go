@@ -25,6 +25,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/incident"
 	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
+	"github.com/alan666gg/ops-agent/internal/slo"
 )
 
 type approvalBackend interface {
@@ -336,14 +337,43 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
+	for _, rs := range results {
+		_ = audit.AppendJSONL(s.auditFile, audit.Event{
+			Time:    time.Now().UTC(),
+			Actor:   "ops-api",
+			Action:  "health_run",
+			Env:     envName,
+			Target:  envName + "/" + rs.Name,
+			Status:  resultStatus(rs),
+			Message: rs.Code + ": " + rs.Message,
+		})
+	}
+	if sloResults, err := (slo.Evaluator{}).EvaluateAvailability(s.auditFile, envName, env); err == nil {
+		results = append(results, sloResults...)
+		for _, rs := range sloResults {
+			_ = audit.AppendJSONL(s.auditFile, audit.Event{
+				Time:    time.Now().UTC(),
+				Actor:   "ops-api",
+				Action:  "slo_eval",
+				Env:     envName,
+				Target:  envName + "/" + rs.Name,
+				Status:  resultStatus(rs),
+				Message: rs.Code + ": " + rs.Message,
+			})
+		}
+	} else {
+		_ = audit.AppendJSONL(s.auditFile, audit.Event{
+			Time:    time.Now().UTC(),
+			Actor:   "ops-api",
+			Action:  "slo_eval",
+			Env:     envName,
+			Status:  "failed",
+			Message: err.Error(),
+		})
+	}
 	policyCfg, _ := policy.Load(s.policyFile)
 	recentAutoActions, _ := audit.CountRecentAutoActions(s.auditFile, envName, time.Now().UTC().Add(-time.Hour))
 	report := incident.BuildReport("ops-api", envName, env, results, policyCfg, recentAutoActions)
-
-	for _, rs := range results {
-		sev := string(rs.Severity)
-		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "health_run", Env: envName, Target: envName + "/" + rs.Name, Status: sev, Message: rs.Code + ": " + rs.Message})
-	}
 	if s.notifyCtl.Enabled() && truthy(r.URL.Query().Get("notify")) {
 		decision, err := s.notifyCtl.Process(r.Context(), report)
 		if err != nil {
@@ -361,6 +391,17 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		"suggestions":       report.Suggestions,
 		"summary":           report.Summary,
 	})
+}
+
+func resultStatus(r checks.Result) string {
+	switch r.Severity {
+	case checks.SeverityWarn:
+		return "warn"
+	case checks.SeverityFail:
+		return "fail"
+	default:
+		return "pass"
+	}
 }
 
 func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
