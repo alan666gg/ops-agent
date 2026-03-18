@@ -37,8 +37,11 @@ type containerState struct {
 	Status     string `json:"status"`
 	Running    bool   `json:"running"`
 	Restarting bool   `json:"restarting"`
+	OOMKilled  bool   `json:"oom_killed"`
 	Error      string `json:"error"`
+	ExitCode   int    `json:"exit_code"`
 	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at"`
 }
 
 func (c ContainerRuntimeChecker) Name() string {
@@ -104,7 +107,7 @@ func (c SystemdJournalChecker) Run(ctx context.Context) Result {
 	}
 	lines := parseLogLines(output)
 	if len(lines) > 0 {
-		return Result{Name: c.Name(), Code: "SYSTEMD_RECENT_ERRORS", Message: "recent error logs: " + strings.Join(lines, " | "), Action: "inspect journal and service configuration", Severity: SeverityWarn}
+		return Result{Name: c.Name(), Code: "SYSTEMD_RECENT_ERRORS", Message: "recent error logs: " + summarizeLogLines(lines, profile.JournalLines), Action: "inspect journal and service configuration", Severity: SeverityWarn}
 	}
 	return Result{Name: c.Name(), Code: "OK", Message: "no recent systemd error logs", Severity: SeverityPass}
 }
@@ -114,7 +117,7 @@ func buildContainerInspectScript(container string) string {
 	return strings.Join([]string{
 		"set +e",
 		"if ! command -v docker >/dev/null 2>&1; then echo 'docker binary missing'; exit 1; fi",
-		"docker inspect --format '{\"restart_count\":{{.RestartCount}},\"state\":{\"status\":{{json .State.Status}},\"running\":{{json .State.Running}},\"restarting\":{{json .State.Restarting}},\"error\":{{json .State.Error}},\"started_at\":{{json .State.StartedAt}}}}' " + container,
+		"docker inspect --format '{\"restart_count\":{{.RestartCount}},\"state\":{\"status\":{{json .State.Status}},\"running\":{{json .State.Running}},\"restarting\":{{json .State.Restarting}},\"oom_killed\":{{json .State.OOMKilled}},\"error\":{{json .State.Error}},\"exit_code\":{{json .State.ExitCode}},\"started_at\":{{json .State.StartedAt}},\"finished_at\":{{json .State.FinishedAt}}}}' " + container,
 	}, "\n")
 }
 
@@ -137,28 +140,44 @@ func parseContainerInspectSample(output string) (containerInspectSample, error) 
 
 func evaluateContainerInspectSample(sample containerInspectSample, checks config.ServiceChecks) (Severity, string, string) {
 	status := strings.TrimSpace(sample.State.Status)
+	if sample.State.OOMKilled {
+		msg := fmt.Sprintf("oom_killed=true exit_code=%d", sample.State.ExitCode)
+		if sample.State.Running {
+			return SeverityWarn, "CONTAINER_OOMKILLED", msg + " (container recovered)"
+		}
+		return SeverityFail, "CONTAINER_OOMKILLED", msg
+	}
 	if sample.State.Restarting {
 		return SeverityFail, "CONTAINER_RESTARTING", "container is restarting"
 	}
 	if !sample.State.Running || (status != "" && status != "running") {
 		msg := "container status=" + defaultString(status, "unknown")
+		if sample.State.ExitCode != 0 {
+			msg += fmt.Sprintf(" exit_code=%d", sample.State.ExitCode)
+		}
+		if strings.TrimSpace(sample.State.FinishedAt) != "" {
+			msg += " finished_at=" + trimTimestamp(sample.State.FinishedAt)
+		}
 		if strings.TrimSpace(sample.State.Error) != "" {
 			msg += " error=" + strings.TrimSpace(sample.State.Error)
+		}
+		if sample.State.ExitCode != 0 {
+			return SeverityFail, "CONTAINER_EXITED_NONZERO", msg
 		}
 		return SeverityFail, "CONTAINER_NOT_RUNNING", msg
 	}
 	if sample.RestartCount >= checks.RestartFailCount {
-		return SeverityFail, "CONTAINER_FLAPPING", fmt.Sprintf("restart_count=%d exceeds fail threshold=%d", sample.RestartCount, checks.RestartFailCount)
+		return SeverityFail, "CONTAINER_FLAPPING", fmt.Sprintf("restart_count=%d exceeds fail threshold=%d started_at=%s", sample.RestartCount, checks.RestartFailCount, trimTimestamp(sample.State.StartedAt))
 	}
 	if sample.RestartCount >= checks.RestartWarnCount {
-		return SeverityWarn, "CONTAINER_RESTARTS_WARN", fmt.Sprintf("restart_count=%d exceeds warn threshold=%d", sample.RestartCount, checks.RestartWarnCount)
+		return SeverityWarn, "CONTAINER_RESTARTS_WARN", fmt.Sprintf("restart_count=%d exceeds warn threshold=%d started_at=%s", sample.RestartCount, checks.RestartWarnCount, trimTimestamp(sample.State.StartedAt))
 	}
 	if sample.RestartCount > 0 {
 		if startedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(sample.State.StartedAt)); err == nil && time.Since(startedAt) <= checks.RestartFlapWindow {
-			return SeverityWarn, "CONTAINER_RECENT_RESTART", fmt.Sprintf("restart_count=%d and container restarted within %s", sample.RestartCount, checks.RestartFlapWindow)
+			return SeverityWarn, "CONTAINER_RECENT_RESTART", fmt.Sprintf("restart_count=%d and container restarted within %s started_at=%s", sample.RestartCount, checks.RestartFlapWindow, trimTimestamp(sample.State.StartedAt))
 		}
 	}
-	return SeverityPass, "OK", fmt.Sprintf("container running restart_count=%d", sample.RestartCount)
+	return SeverityPass, "OK", fmt.Sprintf("container running restart_count=%d started_at=%s", sample.RestartCount, trimTimestamp(sample.State.StartedAt))
 }
 
 func formatJournalSince(window time.Duration) string {
@@ -181,4 +200,72 @@ func parseLogLines(output string) []string {
 		}
 	}
 	return out
+}
+
+func summarizeLogLines(lines []string, limit int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	type item struct {
+		line  string
+		count int
+	}
+	var items []item
+	indexByLine := map[string]int{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if idx, ok := indexByLine[line]; ok {
+			items[idx].count++
+			continue
+		}
+		indexByLine[line] = len(items)
+		items = append(items, item{line: line, count: 1})
+	}
+	if limit <= 0 {
+		limit = 3
+	}
+	out := make([]string, 0, min(limit, len(items)))
+	for i, item := range items {
+		if i >= limit {
+			break
+		}
+		line := trimForLog(item.line, 120)
+		if item.count > 1 {
+			line = fmt.Sprintf("[%dx] %s", item.count, line)
+		}
+		out = append(out, line)
+	}
+	if len(items) > limit {
+		out = append(out, fmt.Sprintf("... and %d more unique errors", len(items)-limit))
+	}
+	return strings.Join(out, " | ")
+}
+
+func trimTimestamp(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "-"
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return ts.UTC().Format(time.RFC3339)
+	}
+	return raw
+}
+
+func trimForLog(v string, limit int) string {
+	v = strings.TrimSpace(v)
+	if limit <= 0 || len(v) <= limit {
+		return v
+	}
+	if limit <= 3 {
+		return v[:limit]
+	}
+	return v[:limit-3] + "..."
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

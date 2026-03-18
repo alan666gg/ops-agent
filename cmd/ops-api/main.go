@@ -392,6 +392,7 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		"suppressed_checks": report.SuppressedChecks,
 		"suggestions":       report.Suggestions,
 		"summary":           report.Summary,
+		"highlights":        report.Highlights,
 	})
 }
 

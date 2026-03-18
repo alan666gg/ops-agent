@@ -29,6 +29,7 @@ type HealthResponse struct {
 	SuppressedChecks []incident.SuppressedCheck `json:"suppressed_checks"`
 	Suggestions      []incident.Suggestion      `json:"suggestions"`
 	Summary          string                     `json:"summary"`
+	Highlights       []string                   `json:"highlights,omitempty"`
 }
 
 type IncidentSummary struct {

@@ -120,10 +120,16 @@ func FormatHealth(resp HealthResponse) string {
 	lines := []string{
 		fmt.Sprintf("[%s] %s", strings.ToUpper(resp.Status), resp.Summary),
 	}
+	for i, item := range resp.Highlights {
+		if i >= 4 {
+			break
+		}
+		lines = append(lines, "- highlight "+trimForChat(item, 140))
+	}
 	appendResults := func(prefix string, items []checks.Result, limit int) {
 		count := 0
 		for _, item := range items {
-			lines = append(lines, fmt.Sprintf("- %s %s: %s", prefix, item.Name, trimForChat(item.Message, 120)))
+			lines = append(lines, fmt.Sprintf("- %s %s [%s]: %s", prefix, item.Name, item.Code, trimForChat(item.Message, 140)))
 			count++
 			if count >= limit {
 				break

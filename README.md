@@ -79,6 +79,9 @@ Service runtime/log checks are configured under `services[].checks`. Defaults ar
 - container services: `restart_warn_count=2`, `restart_fail_count=5`, `restart_flap_window=15m`
 - systemd services: `journal_window=30m`, `journal_lines=3`
 
+Container runtime checks now surface richer failure context such as `oom_killed=true`, `exit_code`, `finished_at`, and recent restart timing.
+Systemd log checks now de-duplicate repeated journal lines into compact summaries so notifications and chat replies stay readable.
+
 Service discovery is now a low-frequency companion step to the scheduler. `ops-agent discover` can SSH into a declared host, list Docker containers, running systemd services, and TCP listeners, then either output a candidate inventory or, with `--apply`, merge newly found services into `configs/environments.yaml` and auto-probe common health paths such as `/healthz`, `/health`, and `/`.
 When a discovered service has no confirmed HTTP health endpoint, the control plane now falls back to the best available check primitive:
 
@@ -202,6 +205,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `ops-scheduler --discover-interval` runs the same discovery/apply flow on a lower cadence than health checks, so new host services can join the next health cycle without a restart.
 - `host_ssh_*` remains the root-cause gate for host reachability; if SSH is already down, the incident layer suppresses dependent host resource/process checks to avoid duplicate noise.
 - `service_runtime_*` and `service_logs_*` are treated as service-scoped signals, so container flapping and recent systemd error logs show up in the same incident context as the parent service.
+- `/health` and `/health/run` responses now include `highlights`, which bubble the most actionable runtime/log signals to the top for Telegram and LLM consumers.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 - `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.

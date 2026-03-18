@@ -41,6 +41,9 @@ func TestTextMessageIncludesSuggestions(t *testing.T) {
 	report := incident.Report{
 		Status:  "fail",
 		Summary: "ops-scheduler prod: 1 failed",
+		Highlights: []string{
+			"service_logs_worker [SYSTEMD_RECENT_ERRORS] recent error logs: [2x] panic: database unavailable",
+		},
 		Suggestions: []incident.Suggestion{
 			{Action: "restart_container", Args: []string{"api-1"}, RequiresApproval: true},
 		},
@@ -60,6 +63,9 @@ func TestTextMessageIncludesSuggestions(t *testing.T) {
 		t.Fatalf("expected %q in text: %s", want, text)
 	}
 	if want := "approval_required"; !strings.Contains(text, want) {
+		t.Fatalf("expected %q in text: %s", want, text)
+	}
+	if want := "highlight service_logs_worker [SYSTEMD_RECENT_ERRORS]"; !strings.Contains(text, want) {
 		t.Fatalf("expected %q in text: %s", want, text)
 	}
 	if want := "suppressed service_api by host_ssh_app_1"; !strings.Contains(text, want) {

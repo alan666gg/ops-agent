@@ -34,6 +34,7 @@ type Report struct {
 	Env              string            `json:"env"`
 	Status           string            `json:"status"`
 	Summary          string            `json:"summary"`
+	Highlights       []string          `json:"highlights,omitempty"`
 	Fingerprint      string            `json:"fingerprint"`
 	TriggeredAt      time.Time         `json:"triggered_at"`
 	Results          []checks.Result   `json:"results"`
@@ -87,6 +88,7 @@ func BuildReport(source, envName string, env config.Environment, results []check
 
 	report.Suggestions = BuildSuggestions(envName, env, actionable, policyCfg, recentAutoActions)
 	report.Summary = buildSummary(report)
+	report.Highlights = buildHighlights(report)
 	report.Fingerprint = fingerprint(report)
 	return report
 }
@@ -253,6 +255,59 @@ func buildSummary(report Report) string {
 	default:
 		return fmt.Sprintf("%s %s: all %d checks passed%s", report.Source, report.Env, report.TotalChecks, suppressedSuffix(report.SuppressedCount))
 	}
+}
+
+func buildHighlights(report Report) []string {
+	active := append([]checks.Result(nil), report.FailedChecks...)
+	active = append(active, report.WarningChecks...)
+	sort.SliceStable(active, func(i, j int) bool {
+		pi := resultPriority(active[i])
+		pj := resultPriority(active[j])
+		if pi == pj {
+			if active[i].Severity == active[j].Severity {
+				return active[i].Name < active[j].Name
+			}
+			return active[i].Severity == checks.SeverityFail
+		}
+		return pi < pj
+	})
+	limit := 4
+	if len(active) < limit {
+		limit = len(active)
+	}
+	out := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		item := active[i]
+		out = append(out, fmt.Sprintf("%s [%s] %s", item.Name, item.Code, trimHighlight(item.Message)))
+	}
+	return out
+}
+
+func resultPriority(item checks.Result) int {
+	switch {
+	case strings.HasPrefix(item.Name, "host_ssh_"):
+		return 0
+	case strings.HasPrefix(item.Name, "service_runtime_"):
+		return 1
+	case strings.HasPrefix(item.Name, "service_logs_"):
+		return 2
+	case strings.HasPrefix(item.Name, "host_resource_"), strings.HasPrefix(item.Name, "host_process_"):
+		return 3
+	case strings.HasPrefix(item.Name, "service_"):
+		return 4
+	case strings.HasPrefix(item.Name, "dependency_"):
+		return 5
+	default:
+		return 6
+	}
+}
+
+func trimHighlight(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) <= 120 {
+		return v
+	}
+	return v[:117] + "..."
 }
 
 func fingerprint(report Report) string {

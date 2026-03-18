@@ -130,6 +130,12 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, payload
 func TextMessage(report incident.Report) string {
 	var lines []string
 	lines = append(lines, fmt.Sprintf("[%s] %s", strings.ToUpper(report.Status), report.Summary))
+	for i, item := range report.Highlights {
+		if i >= 4 {
+			break
+		}
+		lines = append(lines, "- highlight "+item)
+	}
 	for _, item := range append([]incident.Suggestion(nil), report.Suggestions...) {
 		target := ""
 		if item.TargetHost != "" {
@@ -146,10 +152,10 @@ func TextMessage(report incident.Report) string {
 		lines = append(lines, fmt.Sprintf("- suggest %s%s%s%s", item.Action, target, args, approval))
 	}
 	for _, res := range report.FailedChecks {
-		lines = append(lines, fmt.Sprintf("- fail %s: %s", res.Name, res.Message))
+		lines = append(lines, fmt.Sprintf("- fail %s [%s]: %s", res.Name, res.Code, res.Message))
 	}
 	for _, res := range report.WarningChecks {
-		lines = append(lines, fmt.Sprintf("- warn %s: %s", res.Name, res.Message))
+		lines = append(lines, fmt.Sprintf("- warn %s [%s]: %s", res.Name, res.Code, res.Message))
 	}
 	for _, item := range report.SuppressedChecks {
 		lines = append(lines, fmt.Sprintf("- suppressed %s by %s: %s", item.Result.Name, item.SuppressedBy, item.Reason))

@@ -56,8 +56,11 @@ func TestFormatHealthIncludesSuppressedAndSuggestions(t *testing.T) {
 	text := FormatHealth(HealthResponse{
 		Status:  "fail",
 		Summary: "ops-api prod: 1 failed",
+		Highlights: []string{
+			"service_runtime_api [CONTAINER_OOMKILLED] oom_killed=true exit_code=137",
+		},
 		Results: []checks.Result{
-			{Name: "host_ssh_app_1", Severity: checks.SeverityFail, Message: "connection refused"},
+			{Name: "host_ssh_app_1", Code: "TCP_UNREACHABLE", Severity: checks.SeverityFail, Message: "connection refused"},
 		},
 		SuppressedChecks: []incident.SuppressedCheck{
 			{Result: checks.Result{Name: "service_api"}, SuppressedBy: "host_ssh_app_1"},
@@ -66,7 +69,7 @@ func TestFormatHealthIncludesSuppressedAndSuggestions(t *testing.T) {
 			{Action: "check_host_health", TargetHost: "app-1"},
 		},
 	})
-	for _, want := range []string{"[FAIL]", "host_ssh_app_1", "suppressed service_api", "suggest check_host_health"} {
+	for _, want := range []string{"[FAIL]", "highlight service_runtime_api [CONTAINER_OOMKILLED]", "host_ssh_app_1 [TCP_UNREACHABLE]", "suppressed service_api", "suggest check_host_health"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}

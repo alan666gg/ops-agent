@@ -14,6 +14,7 @@
 - Environment health checks cover local agent basics, configured host SSH reachability, service endpoints, and dependencies.
 - Host declarations can now carry `checks` thresholds, so the control plane also evaluates remote host load, memory, disk, inode, and optional required-process health over SSH.
 - Service declarations can also carry `checks`, letting the control plane detect container restart flapping and summarize recent systemd error logs as first-class health signals.
+- Incident reports now expose `highlights`, a compact prioritized view of the most actionable checks, so API clients, Telegram, and LLM tool responses share the same top-level summary cues.
 - Host discovery is SSH-based and produces a candidate inventory of containers, systemd services, and listeners. With explicit `--apply`, it can append or enrich discovered services in the declarative environment config, and the scheduler can now run the same flow on a lower-frequency `--discover-interval` while still reloading config every health cycle.
 - Auto-applied services use the strongest available probe in this order: HTTP health URL, discovered TCP listener port, then `systemctl is-active` over SSH for systemd-only units.
 - Host SSH reachability remains the suppression root for host-scoped checks, so a dead host does not also generate separate resource/process incidents.

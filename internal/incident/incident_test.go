@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/alan666gg/ops-agent/internal/checks"
@@ -129,5 +130,8 @@ func TestBuildSuggestionsForContainerRuntimeFailure(t *testing.T) {
 	}
 	if !found["check_service_health"] || !found["restart_container"] {
 		t.Fatalf("missing expected suggestions: %#v", report.Suggestions)
+	}
+	if len(report.Highlights) == 0 || !strings.Contains(report.Highlights[0], "service_runtime_api [CONTAINER_FLAPPING]") {
+		t.Fatalf("unexpected highlights: %#v", report.Highlights)
 	}
 }
