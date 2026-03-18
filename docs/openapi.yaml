@@ -66,8 +66,11 @@ paths:
         - in: query
           name: limit
           schema: { type: integer, default: 50 }
+        - in: query
+          name: cursor
+          schema: { type: string }
       responses:
-        '200': { description: Action list }
+        '200': { description: Action list (with next_cursor) }
   /actions/run:
     post:
       summary: Direct action execution (policy guarded)

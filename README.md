@@ -48,7 +48,7 @@ API (minimal control plane):
 
 ```bash
 export OPS_API_TOKEN=change-me
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120
 ```
 
 Quick test:
@@ -66,6 +66,8 @@ REQ_ID=$(curl -s -X POST http://127.0.0.1:8090/actions/request \
 # list pending and approve
 curl -s "http://127.0.0.1:8090/actions/pending" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/actions/list?status=executed&limit=20" -H "Authorization: Bearer $OPS_API_TOKEN"
+# cursor pagination: use next_cursor from previous response
+curl -s "http://127.0.0.1:8090/actions/list?status=pending&limit=20&cursor=<next_cursor>" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s -X POST http://127.0.0.1:8090/actions/approve \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $OPS_API_TOKEN" \

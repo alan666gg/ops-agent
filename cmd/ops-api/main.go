@@ -39,6 +39,7 @@ type server struct {
 	allowedActions map[string]bool
 	approvalStore  approvalBackend
 	metrics        *apiMetrics
+	limiter        *rateLimiter
 	mu             sync.Mutex
 }
 
@@ -59,6 +60,46 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+type rateLimiter struct {
+	mu       sync.Mutex
+	window   time.Duration
+	max      int
+	requests map[string][]time.Time
+}
+
+func newRateLimiter(window time.Duration, max int) *rateLimiter {
+	if window <= 0 {
+		window = 1 * time.Minute
+	}
+	if max <= 0 {
+		max = 120
+	}
+	return &rateLimiter{window: window, max: max, requests: map[string][]time.Time{}}
+}
+
+func (l *rateLimiter) allow(key string) bool {
+	now := time.Now()
+	cutoff := now.Add(-l.window)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	arr := l.requests[key]
+	k := 0
+	for _, t := range arr {
+		if t.After(cutoff) {
+			arr[k] = t
+			k++
+		}
+	}
+	arr = arr[:k]
+	if len(arr) >= l.max {
+		l.requests[key] = arr
+		return false
+	}
+	arr = append(arr, now)
+	l.requests[key] = arr
+	return true
 }
 
 type actionRequest struct {
@@ -109,6 +150,8 @@ func main() {
 	pendingFile := flag.String("pending-file", "audit/pending-actions.db", "pending approval requests store path")
 	pendingDriver := flag.String("pending-driver", "sqlite", "pending store driver: sqlite|json")
 	pendingTTL := flag.Duration("pending-ttl", 24*time.Hour, "expire pending requests older than this duration (0 to disable)")
+	rateLimitWindow := flag.Duration("rate-limit-window", time.Minute, "rate limit window")
+	rateLimitMax := flag.Int("rate-limit-max", 120, "max requests per client per window")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	flag.Parse()
 
@@ -124,6 +167,7 @@ func main() {
 		auditFile:     *auditFile,
 		token:         strings.TrimSpace(*token),
 		approvalStore: store,
+		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
 		metrics: &apiMetrics{
 			requestsTotal:    map[string]int64{},
 			errorsTotal:      map[string]int64{},
@@ -164,10 +208,20 @@ func main() {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: 200}
-		w.Header().Set("Content-Type", "application/json")
+		reqID := newID()
+		sw.Header().Set("X-Request-ID", reqID)
+		sw.Header().Set("Content-Type", "application/json")
+
+		if !s.limiter.allow(clientIP(r)) {
+			sw.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(sw).Encode(map[string]any{"error": "rate limit exceeded", "request_id": reqID})
+			s.metricsRecord(r.URL.Path, sw.status, time.Since(start))
+			return
+		}
+
 		if r.URL.Path != "/ready" && r.URL.Path != "/metrics" && !s.authorized(r) {
 			sw.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(sw).Encode(map[string]any{"error": "unauthorized"})
+			_ = json.NewEncoder(sw).Encode(map[string]any{"error": "unauthorized", "request_id": reqID})
 			s.metricsRecord(r.URL.Path, sw.status, time.Since(start))
 			return
 		}
@@ -528,14 +582,38 @@ func (s *server) handleListActions(w http.ResponseWriter, r *http.Request) {
 			limit = 50
 		}
 	}
+	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
+
 	s.mu.Lock()
-	items, err := s.approvalStore.ListByStatus(status, limit)
+	items, err := s.approvalStore.ListByStatus(status, 500)
 	s.mu.Unlock()
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "count": len(items), "items": items})
+
+	start := 0
+	if cursor != "" {
+		for i, it := range items {
+			if actionCursor(it) == cursor {
+				start = i + 1
+				break
+			}
+		}
+	}
+	if start > len(items) {
+		start = len(items)
+	}
+	paged := items[start:]
+	if len(paged) > limit {
+		paged = paged[:limit]
+	}
+	nextCursor := ""
+	if start+len(paged) < len(items) && len(paged) > 0 {
+		nextCursor = actionCursor(paged[len(paged)-1])
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "count": len(paged), "items": paged, "next_cursor": nextCursor})
 }
 
 func (s *server) handleTailAudit(w http.ResponseWriter, r *http.Request) {
@@ -671,6 +749,28 @@ func (s *server) validateActionRequest(req actionRequest) error {
 		}
 	}
 	return nil
+}
+
+func actionCursor(r approval.Request) string {
+	return r.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + r.ID
+}
+
+func clientIP(r *http.Request) string {
+	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	host := strings.TrimSpace(r.RemoteAddr)
+	if i := strings.LastIndex(host, ":"); i > 0 {
+		return host[:i]
+	}
+	if host == "" {
+		return "unknown"
+	}
+	return host
 }
 
 func tailLines(path string, limit int) ([]string, error) {
