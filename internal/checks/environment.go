@@ -10,8 +10,10 @@ import (
 
 func CheckersForEnvironment(env config.Environment) []Checker {
 	items := []Checker{HostChecker{}}
+	hostsByName := map[string]config.Host{}
 
 	for _, host := range env.Hosts {
+		hostsByName[host.Name] = host
 		port := host.SSHPort
 		if port <= 0 {
 			port = 22
@@ -28,6 +30,26 @@ func CheckersForEnvironment(env config.Environment) []Checker {
 			items = append(items, HTTPChecker{
 				NameLabel: "service_" + sanitizeName(svc.Name),
 				TargetURL: rawURL,
+			})
+			continue
+		}
+		host, ok := hostsByName[strings.TrimSpace(svc.Host)]
+		if !ok {
+			continue
+		}
+		if svc.ListenerPort > 0 {
+			items = append(items, TCPChecker{
+				NameLabel: "service_" + sanitizeName(svc.Name),
+				Host:      host.Host,
+				Port:      strconv.Itoa(svc.ListenerPort),
+			})
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") && strings.TrimSpace(svc.SystemdUnit) != "" {
+			items = append(items, SystemdUnitChecker{
+				NameLabel: "service_" + sanitizeName(svc.Name),
+				Host:      host,
+				Unit:      svc.SystemdUnit,
 			})
 		}
 	}

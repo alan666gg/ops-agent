@@ -42,7 +42,7 @@ Host discovery (Docker + systemd + listening ports over SSH):
 go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --format yaml
 # optional file output
 go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --format json --out audit/discovery-app-1.json
-# one-step onboarding: discover container services, probe health URLs, and write back into environments.yaml
+# one-step onboarding: discover container/systemd/listener services, probe health URLs, and write back into environments.yaml
 go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --apply
 ```
 
@@ -50,6 +50,8 @@ Scheduler (periodic health checks):
 
 ```bash
 go run ./cmd/ops-scheduler --env test --env-file configs/environments.yaml --audit audit/scheduler.jsonl --once
+# optional low-frequency inventory refresh alongside high-frequency health checks
+go run ./cmd/ops-scheduler --env prod --env-file configs/environments.yaml --audit audit/scheduler.jsonl --discover-interval 6h --discover-timeout 20s
 ```
 
 The scheduler/API health pass now includes:
@@ -60,7 +62,12 @@ The scheduler/API health pass now includes:
 - HTTP/TCP dependency checks from `dependencies[]`
 - optional history-backed SLO burn-rate checks from `services[].slo`
 
-Service discovery is now a low-frequency companion step to the scheduler. `ops-agent discover` can SSH into a declared host, list Docker containers, running systemd services, and TCP listeners, then either output a candidate inventory or, with `--apply`, merge newly found container services into `configs/environments.yaml` and auto-probe common health paths such as `/healthz`, `/health`, and `/`.
+Service discovery is now a low-frequency companion step to the scheduler. `ops-agent discover` can SSH into a declared host, list Docker containers, running systemd services, and TCP listeners, then either output a candidate inventory or, with `--apply`, merge newly found services into `configs/environments.yaml` and auto-probe common health paths such as `/healthz`, `/health`, and `/`.
+When a discovered service has no confirmed HTTP health endpoint, the control plane now falls back to the best available check primitive:
+
+- container/listener services with a discovered port become TCP-backed service checks
+- systemd services without a port fall back to `systemctl is-active` over SSH
+- candidates with neither a health URL, a listener port, nor a systemd unit stay in the report only and are not auto-applied
 
 If a service is tied to a host with `services[].host`, the incident builder can suppress downstream service/dependency symptoms when that host is already down and focus notifications on the root cause.
 If a service defines `services[].slo`, the scheduler/API will also emit synthetic results like `slo_availability_<service>` based on recent audit history and error-budget burn rate.
@@ -174,7 +181,8 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `policies.forbidden_commands` now blocks actions whose runbook content contains a forbidden command token.
 - `GET /audit/tail` only reads `.jsonl` files inside the configured audit directory.
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
-- `ops-agent discover --apply` only appends or enriches discovered container services; it does not delete existing services or rewrite unrelated hosts.
+- `ops-agent discover --apply` only appends or enriches discovered services; it does not delete existing services or rewrite unrelated hosts.
+- `ops-scheduler --discover-interval` runs the same discovery/apply flow on a lower cadence than health checks, so new host services can join the next health cycle without a restart.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 - `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.

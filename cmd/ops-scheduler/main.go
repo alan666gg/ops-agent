@@ -11,6 +11,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
+	"github.com/alan666gg/ops-agent/internal/discovery"
 	"github.com/alan666gg/ops-agent/internal/incident"
 	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
@@ -34,6 +35,10 @@ func main() {
 	notifyTriggerAfter := flag.Int("notify-trigger-after", 1, "open an incident only after this many consecutive unhealthy cycles")
 	notifyRecoveryAfter := flag.Int("notify-recovery-after", 1, "close an incident only after this many consecutive healthy cycles")
 	notifyConfigFile := flag.String("notify-config", "", "notification routing config file (replaces direct notifier flags)")
+	discoverInterval := flag.Duration("discover-interval", 0, "low-frequency auto-discovery interval; 0 disables periodic discovery")
+	discoverTimeout := flag.Duration("discover-timeout", 30*time.Second, "ssh discovery timeout per host")
+	discoverHealthPaths := flag.String("discover-health-paths", "/healthz,/health,/", "candidate HTTP paths used when auto-probing discovered services")
+	discoverProbeTimeout := flag.Duration("discover-probe-timeout", 1500*time.Millisecond, "timeout for probing candidate healthcheck URLs during discovery apply")
 	once := flag.Bool("once", false, "run one cycle and exit")
 	flag.Parse()
 	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
@@ -85,11 +90,9 @@ func main() {
 		RecoveryAfter:  *notifyRecoveryAfter,
 		Resolver:       resolver,
 	})
+	var lastDiscovery time.Time
 
 	run := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-
 		cfg, err := config.LoadEnvironments(*envFile)
 		if err != nil {
 			fmt.Printf("load env config error: %v\n", err)
@@ -116,6 +119,58 @@ func main() {
 				Message: msg,
 			})
 			return
+		}
+		runTimeout := 20 * time.Second
+		if *discoverInterval > 0 && len(env.Hosts) > 0 {
+			runTimeout += time.Duration(len(env.Hosts)) * *discoverTimeout
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+		defer cancel()
+
+		if shouldRunDiscovery(lastDiscovery, *discoverInterval) {
+			discoveredEnv, summary := runDiscoveryCycle(ctx, *auditFile, *envName, env, discovery.ApplyOptions{
+				HealthPaths:  splitCSV(*discoverHealthPaths),
+				ProbeTimeout: *discoverProbeTimeout,
+			}, *discoverTimeout)
+			lastDiscovery = time.Now().UTC()
+			if summary.Attempted > 0 {
+				evt := audit.Event{
+					Time:    time.Now().UTC(),
+					Actor:   "ops-scheduler",
+					Action:  "discovery_cycle",
+					Env:     *envName,
+					Status:  "ok",
+					Message: fmt.Sprintf("attempted=%d failed=%d added=%d updated=%d skipped=%d", summary.Attempted, summary.Failed, summary.Added, summary.Updated, summary.Skipped),
+				}
+				if summary.Failed > 0 {
+					evt.Status = "warn"
+				}
+				_ = audit.AppendJSONL(*auditFile, evt)
+			}
+			if summary.Changed {
+				cfg.Environments[*envName] = discoveredEnv
+				if err := config.SaveEnvironments(*envFile, cfg); err != nil {
+					fmt.Printf("save env config error: %v\n", err)
+					_ = audit.AppendJSONL(*auditFile, audit.Event{
+						Time:    time.Now().UTC(),
+						Actor:   "ops-scheduler",
+						Action:  "discovery_apply",
+						Env:     *envName,
+						Status:  "failed",
+						Message: err.Error(),
+					})
+				} else {
+					env = discoveredEnv
+					_ = audit.AppendJSONL(*auditFile, audit.Event{
+						Time:    time.Now().UTC(),
+						Actor:   "ops-scheduler",
+						Action:  "discovery_apply",
+						Env:     *envName,
+						Status:  "ok",
+						Message: fmt.Sprintf("applied added=%d updated=%d skipped=%d", summary.Added, summary.Updated, summary.Skipped),
+					})
+				}
+			}
 		}
 
 		results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
@@ -191,6 +246,79 @@ func main() {
 	for range t.C {
 		run()
 	}
+}
+
+type discoverySummary struct {
+	Attempted int
+	Failed    int
+	Added     int
+	Updated   int
+	Skipped   int
+	Changed   bool
+}
+
+func runDiscoveryCycle(ctx context.Context, auditFile, envName string, env config.Environment, opts discovery.ApplyOptions, timeout time.Duration) (config.Environment, discoverySummary) {
+	updatedEnv := env
+	var summary discoverySummary
+	for _, host := range env.Hosts {
+		summary.Attempted++
+		report, err := discovery.Discover(ctx, host, timeout, nil)
+		if err != nil {
+			summary.Failed++
+			_ = audit.AppendJSONL(auditFile, audit.Event{
+				Time:       time.Now().UTC(),
+				Actor:      "ops-scheduler",
+				Action:     "discover_host",
+				Env:        envName,
+				TargetHost: host.Name,
+				Status:     "failed",
+				Message:    err.Error(),
+			})
+			continue
+		}
+		result := discovery.ApplyReport(ctx, &updatedEnv, report, opts)
+		summary.Added += len(result.Added)
+		summary.Updated += len(result.Updated)
+		summary.Skipped += len(result.Skipped)
+		if len(result.Added) > 0 || len(result.Updated) > 0 {
+			summary.Changed = true
+		}
+		_ = audit.AppendJSONL(auditFile, audit.Event{
+			Time:       time.Now().UTC(),
+			Actor:      "ops-scheduler",
+			Action:     "discover_host",
+			Env:        envName,
+			TargetHost: host.Name,
+			Status:     "ok",
+			Message:    fmt.Sprintf("suggested=%d added=%d updated=%d skipped=%d", len(report.SuggestedService), len(result.Added), len(result.Updated), len(result.Skipped)),
+		})
+	}
+	return updatedEnv, summary
+}
+
+func shouldRunDiscovery(last time.Time, interval time.Duration) bool {
+	if interval <= 0 {
+		return false
+	}
+	if last.IsZero() {
+		return true
+	}
+	return time.Since(last) >= interval
+}
+
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	raw := strings.Split(s, ",")
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func schedulerResultStatus(r checks.Result) string {

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,9 @@ type Service struct {
 	Host           string     `yaml:"host,omitempty"`
 	Type           string     `yaml:"type"`
 	ContainerName  string     `yaml:"container_name"`
+	SystemdUnit    string     `yaml:"systemd_unit,omitempty"`
+	ProcessName    string     `yaml:"process_name,omitempty"`
+	ListenerPort   int        `yaml:"listener_port,omitempty"`
 	HealthcheckURL string     `yaml:"healthcheck_url"`
 	SLO            ServiceSLO `yaml:"slo"`
 }
@@ -118,6 +122,8 @@ func (e Environment) Validate(envName string) error {
 
 	serviceNames := map[string]bool{}
 	containerNames := map[string]bool{}
+	systemdUnits := map[string]bool{}
+	listenerKeys := map[string]bool{}
 	for _, svc := range e.Services {
 		if strings.TrimSpace(svc.Name) == "" {
 			return fmt.Errorf("environment %q has service with empty name", envName)
@@ -129,6 +135,21 @@ func (e Environment) Validate(envName string) error {
 		if strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) == "" {
 			return fmt.Errorf("environment %q service %q of type container must define container_name", envName, svc.Name)
 		}
+		if strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") && strings.TrimSpace(svc.SystemdUnit) == "" {
+			return fmt.Errorf("environment %q service %q of type systemd must define systemd_unit", envName, svc.Name)
+		}
+		if strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") && strings.TrimSpace(svc.Host) == "" {
+			return fmt.Errorf("environment %q service %q of type systemd must define host", envName, svc.Name)
+		}
+		if strings.EqualFold(strings.TrimSpace(svc.Type), "listener") && svc.ListenerPort <= 0 {
+			return fmt.Errorf("environment %q service %q of type listener must define listener_port", envName, svc.Name)
+		}
+		if strings.EqualFold(strings.TrimSpace(svc.Type), "listener") && strings.TrimSpace(svc.Host) == "" {
+			return fmt.Errorf("environment %q service %q of type listener must define host", envName, svc.Name)
+		}
+		if svc.ListenerPort < 0 || svc.ListenerPort > 65535 {
+			return fmt.Errorf("environment %q service %q has invalid listener_port %d", envName, svc.Name, svc.ListenerPort)
+		}
 		if ref := strings.TrimSpace(svc.Host); ref != "" && !hostNames[ref] {
 			return fmt.Errorf("environment %q service %q references unknown host %q", envName, svc.Name, ref)
 		}
@@ -137,6 +158,19 @@ func (e Environment) Validate(envName string) error {
 				return fmt.Errorf("environment %q has duplicate container_name %q", envName, name)
 			}
 			containerNames[name] = true
+		}
+		if unit := strings.TrimSpace(svc.SystemdUnit); unit != "" {
+			if systemdUnits[unit] {
+				return fmt.Errorf("environment %q has duplicate systemd_unit %q", envName, unit)
+			}
+			systemdUnits[unit] = true
+		}
+		if svc.ListenerPort > 0 && strings.TrimSpace(svc.Host) != "" {
+			key := strings.TrimSpace(svc.Host) + ":" + strconv.Itoa(svc.ListenerPort)
+			if listenerKeys[key] {
+				return fmt.Errorf("environment %q has duplicate listener service on %q", envName, key)
+			}
+			listenerKeys[key] = true
 		}
 		if rawURL := strings.TrimSpace(svc.HealthcheckURL); rawURL != "" {
 			parsed, err := url.Parse(rawURL)

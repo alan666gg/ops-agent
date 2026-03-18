@@ -57,6 +57,9 @@ type ServiceCandidate struct {
 	Host                string   `json:"host" yaml:"host"`
 	Type                string   `json:"type" yaml:"type"`
 	ContainerName       string   `json:"container_name,omitempty" yaml:"container_name,omitempty"`
+	SystemdUnit         string   `json:"systemd_unit,omitempty" yaml:"systemd_unit,omitempty"`
+	ProcessName         string   `json:"process_name,omitempty" yaml:"process_name,omitempty"`
+	ListenerPort        int      `json:"listener_port,omitempty" yaml:"listener_port,omitempty"`
 	CandidateHealthURLs []string `json:"candidate_health_urls,omitempty" yaml:"candidate_health_urls,omitempty"`
 }
 
@@ -142,7 +145,7 @@ func Parse(output string, host config.Host) (Report, error) {
 	report.Containers = containers
 	report.SystemdServices = parseSystemd(sections["systemd"])
 	report.Listeners = parseListeners(sections["listeners"])
-	report.SuggestedService = suggestServices(host, containers)
+	report.SuggestedService = suggestServices(host, containers, report.SystemdServices, report.Listeners)
 	return report, nil
 }
 
@@ -278,28 +281,96 @@ func splitPorts(raw string) []string {
 	return out
 }
 
-func suggestServices(host config.Host, containers []Container) []ServiceCandidate {
+func suggestServices(host config.Host, containers []Container, units []SystemdService, listeners []Listener) []ServiceCandidate {
 	var out []ServiceCandidate
+	containerPorts := map[int]bool{}
+	usedListeners := map[string]bool{}
 	for _, container := range containers {
+		ports := publishedPorts(container.Ports)
+		for _, port := range ports {
+			containerPorts[port] = true
+		}
 		item := ServiceCandidate{
 			Name:          sanitizeName(container.Name),
 			Host:          strings.TrimSpace(host.Name),
 			Type:          "container",
 			ContainerName: container.Name,
+			ListenerPort:  firstPort(ports),
 		}
-		item.CandidateHealthURLs = candidateHealthURLs(host.Host, container.Ports)
+		item.CandidateHealthURLs = candidateHealthURLsForPorts(host.Host, ports)
 		out = append(out, item)
+	}
+
+	byProcess := map[string][]Listener{}
+	for _, listener := range listeners {
+		process := listenerProcessName(listener.Process)
+		if process == "" {
+			continue
+		}
+		key := normalizeDaemonName(process)
+		if key == "" {
+			continue
+		}
+		byProcess[key] = append(byProcess[key], listener)
+	}
+
+	for _, unit := range units {
+		base := systemdBaseName(unit.Name)
+		if shouldIgnoreSystemd(base) {
+			continue
+		}
+		matches := byProcess[normalizeDaemonName(base)]
+		ports := listenerPorts(matches)
+		item := ServiceCandidate{
+			Name:         sanitizeName(base),
+			Host:         strings.TrimSpace(host.Name),
+			Type:         "systemd",
+			SystemdUnit:  unit.Name,
+			ProcessName:  base,
+			ListenerPort: firstPort(ports),
+		}
+		if len(matches) > 0 {
+			item.ProcessName = defaultString(listenerProcessName(matches[0].Process), base)
+			item.CandidateHealthURLs = candidateHealthURLsForPorts(host.Host, ports)
+			for _, listener := range matches {
+				usedListeners[listenerKey(listener)] = true
+			}
+		}
+		out = append(out, item)
+	}
+
+	for _, listener := range listeners {
+		process := listenerProcessName(listener.Process)
+		if containerPorts[listener.Port] || usedListeners[listenerKey(listener)] || shouldIgnoreListener(process, listener.Port) {
+			continue
+		}
+		name := "listener-" + strconv.Itoa(listener.Port)
+		if process != "" {
+			name = sanitizeName(process + "-" + strconv.Itoa(listener.Port))
+		}
+		out = append(out, ServiceCandidate{
+			Name:                name,
+			Host:                strings.TrimSpace(host.Name),
+			Type:                "listener",
+			ProcessName:         process,
+			ListenerPort:        listener.Port,
+			CandidateHealthURLs: candidateHealthURLsForPorts(host.Host, []int{listener.Port}),
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
 func candidateHealthURLs(host string, ports []string) []string {
+	return candidateHealthURLsForPorts(host, publishedPorts(ports))
+}
+
+func candidateHealthURLsForPorts(host string, ports []int) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, entry := range ports {
-		for _, port := range extractPublishedPorts(entry) {
-			u := fmt.Sprintf("http://%s:%d/", strings.TrimSpace(host), port)
+	for _, port := range ports {
+		for _, scheme := range schemesForPort(port) {
+			u := fmt.Sprintf("%s://%s:%d/", scheme, strings.TrimSpace(host), port)
 			if !seen[u] {
 				seen[u] = true
 				out = append(out, u)
@@ -307,6 +378,21 @@ func candidateHealthURLs(host string, ports []string) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+func publishedPorts(entries []string) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, entry := range entries {
+		for _, port := range extractPublishedPorts(entry) {
+			if !seen[port] {
+				seen[port] = true
+				out = append(out, port)
+			}
+		}
+	}
+	sort.Ints(out)
 	return out
 }
 
@@ -328,6 +414,145 @@ func extractPublishedPorts(entry string) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+func firstPort(ports []int) int {
+	if len(ports) == 0 {
+		return 0
+	}
+	return ports[0]
+}
+
+func listenerPorts(items []Listener) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, item := range items {
+		if item.Port <= 0 || seen[item.Port] {
+			continue
+		}
+		seen[item.Port] = true
+		out = append(out, item.Port)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func schemesForPort(port int) []string {
+	switch port {
+	case 443, 8443, 9443:
+		return []string{"https", "http"}
+	default:
+		return []string{"http"}
+	}
+}
+
+func listenerProcessName(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.Index(raw, `"`); idx >= 0 {
+		rest := raw[idx+1:]
+		if end := strings.Index(rest, `"`); end >= 0 {
+			return strings.TrimSpace(rest[:end])
+		}
+	}
+	raw = strings.TrimPrefix(raw, "users:((")
+	raw = strings.TrimSuffix(raw, "))")
+	if idx := strings.Index(raw, ","); idx >= 0 {
+		raw = raw[:idx]
+	}
+	raw = strings.Trim(raw, `"'() `)
+	return strings.TrimSpace(raw)
+}
+
+func systemdBaseName(unit string) string {
+	unit = strings.TrimSpace(unit)
+	unit = strings.TrimSuffix(unit, ".service")
+	if idx := strings.Index(unit, "@"); idx >= 0 {
+		unit = unit[:idx]
+	}
+	return unit
+}
+
+func normalizeDaemonName(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	var b strings.Builder
+	for _, r := range v {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func shouldIgnoreSystemd(unit string) bool {
+	norm := normalizeDaemonName(unit)
+	if norm == "" {
+		return true
+	}
+	prefixes := []string{
+		"dbus",
+		"systemd",
+		"getty",
+		"serialgetty",
+		"user",
+		"cron",
+		"crond",
+		"sshd",
+		"rsyslog",
+		"polkit",
+		"network",
+		"containerd",
+		"docker",
+		"kubelet",
+		"snapd",
+		"udisks",
+		"wpasupplicant",
+		"multipath",
+		"nscd",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(norm, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldIgnoreListener(process string, port int) bool {
+	if port == 22 {
+		return true
+	}
+	if port < 1024 && port != 80 && port != 443 {
+		return true
+	}
+	norm := normalizeDaemonName(process)
+	if norm == "" {
+		return false
+	}
+	ignored := map[string]bool{
+		"sshd":            true,
+		"dockerproxy":     true,
+		"containerd":      true,
+		"systemd":         true,
+		"systemdresolved": true,
+		"kubeproxy":       true,
+		"nodeexporter":    true,
+		"prometheus":      true,
+	}
+	return ignored[norm]
+}
+
+func listenerKey(item Listener) string {
+	return strconv.Itoa(item.Port) + "|" + normalizeDaemonName(listenerProcessName(item.Process))
+}
+
+func defaultString(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
 }
 
 func sanitizeName(s string) string {

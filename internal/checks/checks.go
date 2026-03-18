@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/alan666gg/ops-agent/internal/config"
 )
 
 type Severity string
@@ -131,4 +134,64 @@ func (HostChecker) Run(ctx context.Context) Result {
 		return Result{Name: "host_basics", Code: "HOST_TOOL_MISSING", Message: err.Error(), Action: "install basic host tooling", Severity: SeverityWarn}
 	}
 	return Result{Name: "host_basics", Code: "OK", Message: "host toolchain present", Severity: SeverityPass}
+}
+
+type SystemdUnitChecker struct {
+	NameLabel string
+	Host      config.Host
+	Unit      string
+	Timeout   time.Duration
+}
+
+func (c SystemdUnitChecker) Name() string {
+	if c.NameLabel != "" {
+		return c.NameLabel
+	}
+	return "systemd_service"
+}
+
+func (c SystemdUnitChecker) Run(ctx context.Context) Result {
+	if strings.TrimSpace(c.Host.Host) == "" {
+		return Result{Name: c.Name(), Code: "SYSTEMD_HOST_MISSING", Message: "host address is empty", Action: "check service host mapping", Severity: SeverityWarn}
+	}
+	if strings.TrimSpace(c.Unit) == "" {
+		return Result{Name: c.Name(), Code: "SYSTEMD_UNIT_MISSING", Message: "systemd unit is empty", Action: "check discovery config", Severity: SeverityWarn}
+	}
+	t := c.Timeout
+	if t <= 0 {
+		t = 5 * time.Second
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, t)
+	defer cancel()
+	args := append(buildSSHArgs(c.Host), "systemctl", "is-active", c.Unit)
+	cmd := exec.CommandContext(checkCtx, "ssh", args...)
+	out, err := cmd.CombinedOutput()
+	status := strings.TrimSpace(string(out))
+	if err != nil {
+		msg := defaultString(status, err.Error())
+		return Result{Name: c.Name(), Code: "SYSTEMD_CHECK_FAILED", Message: msg, Action: "check systemd status and journal", Severity: SeverityFail}
+	}
+	if status != "active" {
+		return Result{Name: c.Name(), Code: "SYSTEMD_INACTIVE", Message: defaultString(status, "inactive"), Action: "check systemd status and journal", Severity: SeverityFail}
+	}
+	return Result{Name: c.Name(), Code: "OK", Message: "systemd service active", Severity: SeverityPass}
+}
+
+func buildSSHArgs(host config.Host) []string {
+	port := host.SSHPort
+	if port <= 0 {
+		port = 22
+	}
+	dest := strings.TrimSpace(host.Host)
+	if user := strings.TrimSpace(host.SSHUser); user != "" {
+		dest = user + "@" + dest
+	}
+	return []string{"-p", strconv.Itoa(port), dest}
+}
+
+func defaultString(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
 }

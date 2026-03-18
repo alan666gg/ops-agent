@@ -96,12 +96,36 @@ func ApplyReport(ctx context.Context, env *config.Environment, report Report, op
 				current.Host = candidate.Host
 				updated = true
 			}
+			if strings.TrimSpace(current.Type) == "" && strings.TrimSpace(candidate.Type) != "" {
+				current.Type = candidate.Type
+				updated = true
+			}
+			if strings.TrimSpace(current.ContainerName) == "" && strings.TrimSpace(candidate.ContainerName) != "" {
+				current.ContainerName = candidate.ContainerName
+				updated = true
+			}
+			if strings.TrimSpace(current.SystemdUnit) == "" && strings.TrimSpace(candidate.SystemdUnit) != "" {
+				current.SystemdUnit = candidate.SystemdUnit
+				updated = true
+			}
+			if strings.TrimSpace(current.ProcessName) == "" && strings.TrimSpace(candidate.ProcessName) != "" {
+				current.ProcessName = candidate.ProcessName
+				updated = true
+			}
+			if current.ListenerPort <= 0 && candidate.ListenerPort > 0 {
+				current.ListenerPort = candidate.ListenerPort
+				updated = true
+			}
 			if updated {
 				env.Services[idx] = current
 				result.Updated = append(result.Updated, current)
 			} else {
-				result.Skipped = append(result.Skipped, candidate.ContainerName)
+				result.Skipped = append(result.Skipped, candidateID(candidate))
 			}
+			continue
+		}
+		if reachable == "" && candidate.ListenerPort <= 0 && strings.TrimSpace(candidate.SystemdUnit) == "" {
+			result.Skipped = append(result.Skipped, candidateID(candidate))
 			continue
 		}
 
@@ -112,6 +136,9 @@ func ApplyReport(ctx context.Context, env *config.Environment, report Report, op
 			Host:           candidate.Host,
 			Type:           candidate.Type,
 			ContainerName:  candidate.ContainerName,
+			SystemdUnit:    candidate.SystemdUnit,
+			ProcessName:    candidate.ProcessName,
+			ListenerPort:   candidate.ListenerPort,
 			HealthcheckURL: reachable,
 		}
 		env.Services = append(env.Services, item)
@@ -137,7 +164,19 @@ func candidateURLsForApply(hostAddress string, candidate ServiceCandidate, healt
 			}
 		}
 	}
-	if len(out) == 0 && strings.TrimSpace(hostAddress) != "" {
+	if len(out) == 0 && strings.TrimSpace(hostAddress) != "" && candidate.ListenerPort > 0 {
+		for _, scheme := range schemesForPort(candidate.ListenerPort) {
+			base := scheme + "://" + strings.TrimSpace(hostAddress) + ":" + strconv.Itoa(candidate.ListenerPort)
+			for _, path := range healthPaths {
+				u := base + normalizePath(path)
+				if !seen[u] {
+					seen[u] = true
+					out = append(out, u)
+				}
+			}
+		}
+	}
+	if len(out) == 0 && strings.TrimSpace(hostAddress) != "" && candidate.ListenerPort <= 0 {
 		for _, path := range healthPaths {
 			u := "http://" + strings.TrimSpace(hostAddress) + normalizePath(path)
 			if !seen[u] {
@@ -182,11 +221,30 @@ func findService(items []config.Service, candidate ServiceCandidate) int {
 		if strings.TrimSpace(item.ContainerName) != "" && item.ContainerName == candidate.ContainerName {
 			return i
 		}
+		if strings.TrimSpace(item.SystemdUnit) != "" && item.SystemdUnit == candidate.SystemdUnit {
+			return i
+		}
+		if item.ListenerPort > 0 && candidate.ListenerPort > 0 && item.Host == candidate.Host && item.ListenerPort == candidate.ListenerPort {
+			return i
+		}
 		if strings.TrimSpace(item.ContainerName) == "" && item.Host == candidate.Host && item.Name == candidate.Name {
 			return i
 		}
 	}
 	return -1
+}
+
+func candidateID(candidate ServiceCandidate) string {
+	switch {
+	case strings.TrimSpace(candidate.ContainerName) != "":
+		return candidate.ContainerName
+	case strings.TrimSpace(candidate.SystemdUnit) != "":
+		return candidate.SystemdUnit
+	case candidate.ListenerPort > 0:
+		return candidate.Name + ":" + strconv.Itoa(candidate.ListenerPort)
+	default:
+		return candidate.Name
+	}
 }
 
 func uniqueServiceName(seen map[string]bool, base string) string {

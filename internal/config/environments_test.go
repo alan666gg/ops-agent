@@ -135,19 +135,126 @@ func TestLoadEnvironmentsRejectsInvalidSLOConfig(t *testing.T) {
 	}
 }
 
+func TestLoadEnvironmentsRejectsIncompleteDiscoveredServiceTypes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+    services:
+      - name: nginx
+        host: app-1
+        type: systemd
+      - name: admin
+        host: app-1
+        type: listener
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadEnvironments(path)
+	if err == nil {
+		t.Fatal("expected invalid discovered service type validation error")
+	}
+}
+
+func TestLoadEnvironmentsAcceptsDiscoveredServiceTypes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+    services:
+      - name: nginx
+        host: app-1
+        type: systemd
+        systemd_unit: nginx.service
+        process_name: nginx
+        listener_port: 80
+      - name: admin
+        host: app-1
+        type: listener
+        process_name: custom-app
+        listener_port: 9090
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadEnvironments(path)
+	if err != nil {
+		t.Fatalf("expected valid discovered service config, got %v", err)
+	}
+	if got := cfg.Environments["prod"].Services; len(got) != 2 || got[0].SystemdUnit == "" || got[1].ListenerPort != 9090 {
+		t.Fatalf("unexpected services: %+v", got)
+	}
+}
+
+func TestLoadEnvironmentsRejectsDuplicateSystemdAndListenerTargets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+    services:
+      - name: nginx
+        host: app-1
+        type: systemd
+        systemd_unit: nginx.service
+      - name: nginx-copy
+        host: app-1
+        type: systemd
+        systemd_unit: nginx.service
+      - name: admin
+        host: app-1
+        type: listener
+        listener_port: 9090
+      - name: admin-copy
+        host: app-1
+        type: listener
+        listener_port: 9090
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadEnvironments(path)
+	if err == nil {
+		t.Fatal("expected duplicate discovered target validation error")
+	}
+}
+
 func TestSaveEnvironmentsRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "environments.yaml")
 	input := EnvironmentFile{
 		Environments: map[string]Environment{
 			"prod": {
 				Hosts: []Host{{Name: "app-1", Host: "10.0.0.5", SSHUser: "root", SSHPort: 22}},
-				Services: []Service{{
-					Name:           "api",
-					Host:           "app-1",
-					Type:           "container",
-					ContainerName:  "api",
-					HealthcheckURL: "http://10.0.0.5:8080/healthz",
-				}},
+				Services: []Service{
+					{
+						Name:           "api",
+						Host:           "app-1",
+						Type:           "container",
+						ContainerName:  "api",
+						ListenerPort:   8080,
+						HealthcheckURL: "http://10.0.0.5:8080/healthz",
+					},
+					{
+						Name:         "nginx",
+						Host:         "app-1",
+						Type:         "systemd",
+						SystemdUnit:  "nginx.service",
+						ProcessName:  "nginx",
+						ListenerPort: 80,
+					},
+				},
 			},
 		},
 	}
@@ -158,7 +265,7 @@ func TestSaveEnvironmentsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(output.Environments["prod"].Services) != 1 || output.Environments["prod"].Services[0].Name != "api" {
+	if len(output.Environments["prod"].Services) != 2 || output.Environments["prod"].Services[1].SystemdUnit != "nginx.service" {
 		t.Fatalf("unexpected output: %+v", output)
 	}
 }

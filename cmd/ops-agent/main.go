@@ -195,7 +195,7 @@ func runDiscover(args []string) {
 	format := fs.String("format", "yaml", "output format: yaml|json")
 	timeout := fs.Duration("timeout", 30*time.Second, "ssh discovery timeout")
 	outPath := fs.String("out", "", "optional output file path (defaults to stdout)")
-	apply := fs.Bool("apply", false, "merge discovered container services into the selected environment config")
+	apply := fs.Bool("apply", false, "merge discovered services into the selected environment config")
 	healthPaths := fs.String("health-paths", "/healthz,/health,/", "candidate HTTP paths used when auto-probing discovered services")
 	probeTimeout := fs.Duration("probe-timeout", 1500*time.Millisecond, "timeout for probing candidate healthcheck URLs during --apply")
 	_ = fs.Parse(args)
@@ -238,10 +238,10 @@ func runDiscover(args []string) {
 		}
 		fmt.Printf("applied discovery to %s env=%s host=%s: added=%d updated=%d skipped=%d\n", *envFile, *envName, host.Name, len(result.Added), len(result.Updated), len(result.Skipped))
 		for _, svc := range result.Added {
-			fmt.Printf("  added service %s container=%s health=%s\n", svc.Name, svc.ContainerName, defaultString(svc.HealthcheckURL, "(none)"))
+			fmt.Printf("  added service %s type=%s container=%s systemd=%s port=%d health=%s\n", svc.Name, defaultString(svc.Type, "(unknown)"), defaultString(svc.ContainerName, "-"), defaultString(svc.SystemdUnit, "-"), svc.ListenerPort, defaultString(svc.HealthcheckURL, "(none)"))
 		}
 		for _, svc := range result.Updated {
-			fmt.Printf("  updated service %s health=%s\n", svc.Name, defaultString(svc.HealthcheckURL, "(none)"))
+			fmt.Printf("  updated service %s type=%s systemd=%s port=%d health=%s\n", svc.Name, defaultString(svc.Type, "(unknown)"), defaultString(svc.SystemdUnit, "-"), svc.ListenerPort, defaultString(svc.HealthcheckURL, "(none)"))
 		}
 		if len(result.Skipped) > 0 {
 			fmt.Printf("  skipped existing candidates: %s\n", strings.Join(result.Skipped, ", "))
