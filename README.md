@@ -36,6 +36,14 @@ go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy co
 go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml
 ```
 
+Host discovery (Docker + systemd + listening ports over SSH):
+
+```bash
+go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --format yaml
+# optional file output
+go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --format json --out audit/discovery-app-1.json
+```
+
 Scheduler (periodic health checks):
 
 ```bash
@@ -49,6 +57,8 @@ The scheduler/API health pass now includes:
 - service HTTP checks from `services[].healthcheck_url`
 - HTTP/TCP dependency checks from `dependencies[]`
 - optional history-backed SLO burn-rate checks from `services[].slo`
+
+Service discovery is a separate low-frequency step today. The new `ops-agent discover` command can SSH into a declared host, list Docker containers, running systemd services, and TCP listeners, then output a candidate inventory for you to review before adding it to `configs/environments.yaml`.
 
 If a service is tied to a host with `services[].host`, the incident builder can suppress downstream service/dependency symptoms when that host is already down and focus notifications on the root cause.
 If a service defines `services[].slo`, the scheduler/API will also emit synthetic results like `slo_availability_<service>` based on recent audit history and error-budget burn rate.

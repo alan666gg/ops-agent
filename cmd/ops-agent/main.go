@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,8 +15,10 @@ import (
 	"github.com/alan666gg/ops-agent/internal/chatops"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
+	"github.com/alan666gg/ops-agent/internal/discovery"
 	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -28,6 +32,8 @@ func main() {
 		runHealth(os.Args[2:])
 	case "policy":
 		runPolicy(os.Args[2:])
+	case "discover":
+		runDiscover(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
 	default:
@@ -40,6 +46,7 @@ func usage() {
 	fmt.Println("ops-agent commands:")
 	fmt.Println("  health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1:6379")
 	fmt.Println("  policy --action <" + strings.Join(actions.Names(), "|") + "> --env test --policy configs/policies.yaml --audit audit.jsonl")
+	fmt.Println("  discover --env-file configs/environments.yaml --env test --host test-app-1 --format yaml")
 	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml")
 }
 
@@ -178,6 +185,70 @@ func runValidate(args []string) {
 			chatCfg.MaxInputChars,
 		)
 	}
+}
+
+func runDiscover(args []string) {
+	fs := flag.NewFlagSet("discover", flag.ExitOnError)
+	envFile := fs.String("env-file", "configs/environments.yaml", "environment config file")
+	envName := fs.String("env", "test", "environment name")
+	hostName := fs.String("host", "", "host name declared in the environment config")
+	format := fs.String("format", "yaml", "output format: yaml|json")
+	timeout := fs.Duration("timeout", 30*time.Second, "ssh discovery timeout")
+	outPath := fs.String("out", "", "optional output file path (defaults to stdout)")
+	_ = fs.Parse(args)
+
+	if strings.TrimSpace(*hostName) == "" {
+		fmt.Println("host is required")
+		os.Exit(1)
+	}
+	cfg, err := config.LoadEnvironments(*envFile)
+	if err != nil {
+		fmt.Println("environment config invalid:", err)
+		os.Exit(1)
+	}
+	env, ok := cfg.Environment(*envName)
+	if !ok {
+		fmt.Printf("env %q not found in %s\n", *envName, *envFile)
+		os.Exit(1)
+	}
+	host, ok := env.HostByName(*hostName)
+	if !ok {
+		fmt.Printf("host %q not found in env %q\n", *hostName, *envName)
+		os.Exit(1)
+	}
+
+	report, err := discovery.Discover(context.Background(), host, *timeout, nil)
+	if err != nil {
+		fmt.Println("discovery failed:", err)
+		os.Exit(1)
+	}
+	var payload []byte
+	switch strings.ToLower(strings.TrimSpace(*format)) {
+	case "json":
+		payload, err = json.MarshalIndent(report, "", "  ")
+	case "yaml", "yml":
+		payload, err = yaml.Marshal(report)
+	default:
+		fmt.Println("format must be yaml or json")
+		os.Exit(1)
+	}
+	if err != nil {
+		fmt.Println("encode discovery report error:", err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*outPath) != "" {
+		if err := os.MkdirAll(filepath.Dir(*outPath), 0o755); err != nil {
+			fmt.Println("create discovery output dir error:", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(*outPath, payload, 0o644); err != nil {
+			fmt.Println("write discovery report error:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("discovery report written to %s\n", *outPath)
+		return
+	}
+	fmt.Println(string(payload))
 }
 
 func splitCSV(s string) []string {

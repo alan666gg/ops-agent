@@ -9,6 +9,7 @@ go run ./cmd/ops-scheduler --env test --env-file configs/environments.yaml --pol
 ```
 
 Each cycle checks local host basics plus the selected environment's configured hosts, service endpoints, and dependencies.
+Automatic host discovery is not part of the high-frequency scheduler loop yet; use `go run ./cmd/ops-agent discover ...` as a lower-frequency inventory step and then add the reviewed results back into the environment config.
 If a host outage is already detected, services bound to that host can be marked as suppressed downstream symptoms instead of separate incidents.
 If services define `slo`, the scheduler also evaluates history-backed availability burn rate and emits synthetic `slo_availability_*` results.
 When notifier flags are set, warn/fail cycles are summarized into action suggestions and pushed to the configured destination.
