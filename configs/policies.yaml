@@ -6,7 +6,6 @@ policies:
       - check_dependencies
     require_approval:
       - restart_container
-      - deploy_release
       - rollback_release
 
   forbidden_commands:

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alan666gg/ops-agent/internal/actions"
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/policy"
@@ -33,7 +34,7 @@ func main() {
 func usage() {
 	fmt.Println("ops-agent commands:")
 	fmt.Println("  health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1:6379")
-	fmt.Println("  policy --action restart_container --policy configs/policies.yaml --audit audit.jsonl")
+	fmt.Println("  policy --action <" + strings.Join(actions.Names(), "|") + "> --env test --policy configs/policies.yaml --audit audit.jsonl")
 }
 
 func runHealth(args []string) {
@@ -73,6 +74,7 @@ func runHealth(args []string) {
 func runPolicy(args []string) {
 	fs := flag.NewFlagSet("policy", flag.ExitOnError)
 	action := fs.String("action", "", "action name")
+	env := fs.String("env", "test", "environment name")
 	policyFile := fs.String("policy", "configs/policies.yaml", "policy file")
 	auditFile := fs.String("audit", "audit/events.jsonl", "audit jsonl file")
 	actor := fs.String("actor", "ops-agent", "actor name")
@@ -89,15 +91,19 @@ func runPolicy(args []string) {
 		os.Exit(1)
 	}
 
-	allowed, requires := cfg.ActionAllowed(*action)
+	recentAutoActions, err := audit.CountRecentAutoActions(*auditFile, *env, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		fmt.Println("count audit error:", err)
+		os.Exit(1)
+	}
+	decision := cfg.Evaluate(*action, *env, recentAutoActions)
 	status := "allowed"
-	msg := "action allowed"
-	if !allowed {
+	msg := decision.Reason
+	requires := decision.RequiresApproval
+	if !decision.Allowed {
 		status = "denied"
-		msg = "action denied by policy"
-	} else if requires {
+	} else if decision.RequiresApproval {
 		status = "approval_required"
-		msg = "action requires approval"
 	}
 
 	fmt.Printf("policy result: %s (%s)\n", status, msg)
@@ -106,6 +112,7 @@ func runPolicy(args []string) {
 		Time:       time.Now().UTC(),
 		Actor:      *actor,
 		Action:     *action,
+		Env:        *env,
 		Status:     status,
 		Message:    msg,
 		RequiresOK: requires,

@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/alan666gg/ops-agent/internal/actions"
 )
 
 type Result struct {
@@ -14,16 +16,8 @@ type Result struct {
 	Err      error
 }
 
-var actionToCmd = map[string][]string{
-	"check_host_health":    {"bash", "runbooks/check_host_health.sh"},
-	"check_service_health": {"bash", "runbooks/check_service_health.sh"},
-	"check_dependencies":   {"bash", "runbooks/check_dependencies.sh"},
-	"restart_container":    {"bash", "runbooks/restart_container.sh"},
-	"rollback_release":     {"bash", "runbooks/rollback_release.sh"},
-}
-
 func RunAction(ctx context.Context, action string, args []string, timeout time.Duration) Result {
-	base, ok := actionToCmd[action]
+	spec, ok := actions.Lookup(action)
 	if !ok {
 		return Result{ExitCode: 127, Err: fmt.Errorf("unknown action: %s", action)}
 	}
@@ -33,7 +27,7 @@ func RunAction(ctx context.Context, action string, args []string, timeout time.D
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmdArgs := append(append([]string{}, base...), args...)
+	cmdArgs := append(append([]string{}, spec.Runbook...), args...)
 	cmd := exec.CommandContext(cctx, cmdArgs[0], cmdArgs[1:]...)
 	out, err := cmd.CombinedOutput()
 

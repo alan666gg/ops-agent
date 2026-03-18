@@ -1,6 +1,6 @@
 # ops-agent
 
-Internal Ops Agent (v0.1) scaffold.
+Internal Ops Agent scaffold with policy-gated runbooks, approvals, and audit trails.
 
 ## Structure
 
@@ -25,7 +25,7 @@ go run ./cmd/ops-agent health --url http://127.0.0.1:8080/ --dep redis:127.0.0.1
 Policy evaluation + audit:
 
 ```bash
-go run ./cmd/ops-agent policy --action restart_container --policy configs/policies.yaml --audit audit/events.jsonl
+go run ./cmd/ops-agent policy --action restart_container --env prod --policy configs/policies.yaml --audit audit/events.jsonl
 ```
 
 Scheduler (periodic health checks):
@@ -38,10 +38,10 @@ Worker (policy-gated runbook execution):
 
 ```bash
 # low-risk action (allowed)
-go run ./cmd/ops-worker --action check_host_health --policy configs/policies.yaml --audit audit/worker.jsonl
+go run ./cmd/ops-worker --action check_host_health --env test --policy configs/policies.yaml --audit audit/worker.jsonl
 
 # action requiring approval
-go run ./cmd/ops-worker --action restart_container --args cicdtest-app --policy configs/policies.yaml --audit audit/worker.jsonl --approved
+go run ./cmd/ops-worker --action restart_container --env prod --args cicdtest-app --policy configs/policies.yaml --audit audit/worker.jsonl --approved
 ```
 
 API (minimal control plane):
@@ -57,11 +57,17 @@ Quick test:
 curl -s http://127.0.0.1:8090/ready
 curl -s "http://127.0.0.1:8090/health/run?env=test" -H "Authorization: Bearer $OPS_API_TOKEN"
 
+# test environment action can auto-execute
+curl -s -X POST http://127.0.0.1:8090/actions/run \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -d '{"action":"check_host_health","env":"test","actor":"local-dev"}'
+
 # request approval-required action
 REQ_ID=$(curl -s -X POST http://127.0.0.1:8090/actions/request \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $OPS_API_TOKEN" \
-  -d '{"action":"restart_container","args":["cicdtest-app"],"actor":"local-dev"}' | jq -r .request_id)
+  -d '{"action":"restart_container","env":"prod","args":["cicdtest-app"],"actor":"local-dev"}' | jq -r .request_id)
 
 # list pending and approve
 curl -s "http://127.0.0.1:8090/actions/pending" -H "Authorization: Bearer $OPS_API_TOKEN"
@@ -73,7 +79,15 @@ curl -s -X POST http://127.0.0.1:8090/actions/approve \
   -H "Authorization: Bearer $OPS_API_TOKEN" \
   -d "{\"request_id\":\"$REQ_ID\",\"approver\":\"ops-admin\"}"
 
+curl -s "http://127.0.0.1:8090/audit/tail?file=api.jsonl&limit=20" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/metrics"
 ```
 
+## Guardrails
+
+- Supported actions come from a single action registry in `internal/actions`.
+- Production guardrails apply when `env=prod` or `env=production`.
+- `policies.production.require_human_approval=true` upgrades otherwise-safe actions to approval-required in production.
+- `policies.production.max_auto_actions_per_hour` limits unattended production actions per hour; excess requests are converted to approval-required.
+- `GET /audit/tail` only reads `.jsonl` files inside the configured audit directory.

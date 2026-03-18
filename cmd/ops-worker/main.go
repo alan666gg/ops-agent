@@ -8,13 +8,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alan666gg/ops-agent/internal/actions"
 	"github.com/alan666gg/ops-agent/internal/audit"
 	rbexec "github.com/alan666gg/ops-agent/internal/exec"
 	"github.com/alan666gg/ops-agent/internal/policy"
 )
 
 func main() {
-	action := flag.String("action", "", "action name, e.g. check_host_health|check_service_health|check_dependencies|restart_container|rollback_release")
+	action := flag.String("action", "", "action name, one of: "+strings.Join(actions.Names(), "|"))
+	env := flag.String("env", "test", "environment name for policy evaluation")
 	argsRaw := flag.String("args", "", "comma-separated args passed to runbook")
 	policyFile := flag.String("policy", "configs/policies.yaml", "policy file path")
 	auditFile := flag.String("audit", "audit/worker.jsonl", "audit output jsonl")
@@ -34,19 +36,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	allowed, requiresApproval := cfg.ActionAllowed(*action)
-	if !allowed {
-		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Status: "denied", Message: "action denied by policy"})
-		fmt.Println("denied: action not allowed by policy")
+	recentAutoActions, err := audit.CountRecentAutoActions(*auditFile, *env, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		fmt.Println("count recent auto actions error:", err)
+		os.Exit(1)
+	}
+	decision := cfg.Evaluate(*action, *env, recentAutoActions)
+	if !decision.Allowed {
+		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, Status: "denied", Message: decision.Reason})
+		fmt.Println("denied:", decision.Reason)
 		os.Exit(2)
 	}
-	if requiresApproval && !*approved {
-		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Status: "approval_required", Message: "approval required", RequiresOK: true})
-		fmt.Println("approval required: rerun with --approved after human confirmation")
+	if decision.RequiresApproval && !*approved {
+		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, Status: "approval_required", Message: decision.Reason, RequiresOK: true})
+		fmt.Println("approval required:", decision.Reason)
 		os.Exit(3)
 	}
 
 	args := parseArgs(*argsRaw)
+	if err := actions.ValidateArgs(*action, args); err != nil {
+		emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, Status: "denied", Message: err.Error()})
+		fmt.Println("invalid action args:", err)
+		os.Exit(2)
+	}
 	res := rbexec.RunAction(context.Background(), *action, args, *timeout)
 	status := "ok"
 	msg := res.Output
@@ -56,7 +68,7 @@ func main() {
 			msg = res.Err.Error()
 		}
 	}
-	emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Status: status, Message: msg, RequiresOK: requiresApproval})
+	emit(*auditFile, audit.Event{Time: time.Now().UTC(), Actor: *actor, Action: *action, Env: *env, Status: status, Message: msg, RequiresOK: decision.RequiresApproval})
 
 	if res.Output != "" {
 		fmt.Println(res.Output)

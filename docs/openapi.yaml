@@ -39,6 +39,27 @@ paths:
   /actions/request:
     post:
       summary: Create action request (pending or auto-executed)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [check_host_health, check_service_health, check_dependencies, restart_container, rollback_release]
+                env:
+                  type: string
+                  default: test
+                args:
+                  type: array
+                  items: { type: string }
+                actor:
+                  type: string
+                timeout_seconds:
+                  type: integer
       responses:
         '202': { description: Accepted }
   /actions/pending:
@@ -49,11 +70,39 @@ paths:
   /actions/approve:
     post:
       summary: Approve and execute a pending request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_id]
+              properties:
+                request_id:
+                  type: string
+                approver:
+                  type: string
+                timeout_seconds:
+                  type: integer
       responses:
         '200': { description: Executed }
   /actions/reject:
     post:
       summary: Reject a pending request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_id]
+              properties:
+                request_id:
+                  type: string
+                approver:
+                  type: string
+                reason:
+                  type: string
       responses:
         '200': { description: Rejected }
   /actions/list:
@@ -74,12 +123,40 @@ paths:
   /actions/run:
     post:
       summary: Direct action execution (policy guarded)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [check_host_health, check_service_health, check_dependencies, restart_container, rollback_release]
+                env:
+                  type: string
+                  default: test
+                args:
+                  type: array
+                  items: { type: string }
+                actor:
+                  type: string
+                approved:
+                  type: boolean
+                timeout_seconds:
+                  type: integer
       responses:
         '200': { description: Executed }
   /audit/tail:
     get:
       summary: Tail audit log lines
       parameters:
+        - in: query
+          name: file
+          schema:
+            type: string
+            description: Basename of a `.jsonl` file inside the configured audit directory
         - in: query
           name: limit
           schema: { type: integer, default: 50 }

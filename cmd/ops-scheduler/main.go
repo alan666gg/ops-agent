@@ -71,6 +71,7 @@ func main() {
 				Time:    time.Now().UTC(),
 				Actor:   "ops-scheduler",
 				Action:  "health_cycle",
+				Env:     *envName,
 				Target:  *envName + "/" + r.Name,
 				Status:  status,
 				Message: r.Code + ": " + r.Message,

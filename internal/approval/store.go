@@ -11,6 +11,7 @@ import (
 type Request struct {
 	ID               string    `json:"id"`
 	Action           string    `json:"action"`
+	Env              string    `json:"env,omitempty"`
 	Args             []string  `json:"args"`
 	Actor            string    `json:"actor"`
 	RequiresApproval bool      `json:"requires_approval"`
