@@ -231,6 +231,25 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 			return "incident summary failed: " + err.Error(), nil
 		}
 		return chatops.FormatIncidentSummary(resp), nil
+	case "active":
+		projects, err := agent.Authorizer.AllowedProjects(actor)
+		if err != nil {
+			return "active incidents denied: " + err.Error(), nil
+		}
+		resp, err := api.ActiveIncidents(ctx, 10, cmd.Env, projects)
+		if err != nil {
+			return "active incidents failed: " + err.Error(), nil
+		}
+		return chatops.FormatActiveIncidents(resp), chatops.IncidentListMarkup(resp.Items)
+	case "incident":
+		item, err := api.GetIncident(ctx, cmd.IncidentID)
+		if err != nil {
+			return "incident detail failed: " + err.Error(), nil
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "incident detail denied: " + err.Error(), nil
+		}
+		return chatops.FormatIncidentDetail(item), chatops.IncidentMarkup(item)
 	case "pending":
 		projects, err := agent.Authorizer.AllowedProjects(actor)
 		if err != nil {
@@ -286,6 +305,32 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 			return "reject failed: " + err.Error(), nil
 		}
 		return fmt.Sprintf("rejected %s\nstatus=%s\nmessage=%s", cmd.RequestID, resp.Status, strings.TrimSpace(resp.Message)), nil
+	case "ack":
+		item, err := api.GetIncident(ctx, cmd.IncidentID)
+		if err != nil {
+			return "ack failed: " + err.Error(), nil
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "ack denied: " + err.Error(), nil
+		}
+		updated, err := api.AckIncident(ctx, cmd.IncidentID, actor, cmd.Reason)
+		if err != nil {
+			return "ack failed: " + err.Error(), nil
+		}
+		return fmt.Sprintf("acknowledged %s\nowner=%s\nsummary=%s", updated.ID, defaultString(updated.Owner, "(unassigned)"), strings.TrimSpace(updated.Summary)), chatops.IncidentMarkup(updated)
+	case "assign":
+		item, err := api.GetIncident(ctx, cmd.IncidentID)
+		if err != nil {
+			return "assign failed: " + err.Error(), nil
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "assign denied: " + err.Error(), nil
+		}
+		updated, err := api.AssignIncident(ctx, cmd.IncidentID, cmd.Owner, actor, cmd.Reason)
+		if err != nil {
+			return "assign failed: " + err.Error(), nil
+		}
+		return fmt.Sprintf("assigned %s\nowner=%s\nstatus=%s", updated.ID, defaultString(updated.Owner, "(unassigned)"), updated.Status), chatops.IncidentMarkup(updated)
 	case "request":
 		if _, err := authorizeCommandEnv(agent, actor, cmd.Env); err != nil {
 			return "request denied: " + err.Error(), nil
@@ -324,6 +369,44 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 			return "", nil, err
 		}
 		return chatops.FormatActionDetail(item), chatops.ActionMarkup(item), nil
+	case strings.HasPrefix(data, "incident_show:"):
+		id := strings.TrimPrefix(data, "incident_show:")
+		item, err := api.GetIncident(ctx, id)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "", nil, err
+		}
+		return chatops.FormatIncidentDetail(item), chatops.IncidentMarkup(item), nil
+	case strings.HasPrefix(data, "incident_ack:"):
+		id := strings.TrimPrefix(data, "incident_ack:")
+		item, err := api.GetIncident(ctx, id)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "", nil, err
+		}
+		updated, err := api.AckIncident(ctx, id, actor, "acknowledged from telegram button")
+		if err != nil {
+			return "", nil, err
+		}
+		return "acknowledged " + id, chatops.IncidentMarkup(updated), nil
+	case strings.HasPrefix(data, "incident_assign:"):
+		id := strings.TrimPrefix(data, "incident_assign:")
+		item, err := api.GetIncident(ctx, id)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "", nil, err
+		}
+		updated, err := api.AssignIncident(ctx, id, actor, actor, "claimed from telegram button")
+		if err != nil {
+			return "", nil, err
+		}
+		return "claimed " + id, chatops.IncidentMarkup(updated), nil
 	case strings.HasPrefix(data, "approve:"):
 		id := strings.TrimPrefix(data, "approve:")
 		item, err := api.GetAction(ctx, id)

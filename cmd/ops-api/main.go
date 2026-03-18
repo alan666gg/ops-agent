@@ -43,6 +43,7 @@ type server struct {
 	auditDriver   string
 	auditFile     string
 	auditStore    audit.Store
+	incidentStore incident.Store
 	token         string
 	approvalStore approvalBackend
 	metrics       *apiMetrics
@@ -154,12 +155,20 @@ type incidentSummary struct {
 	TopTargets    []string       `json:"top_targets"`
 }
 
+type incidentActionRequest struct {
+	ID    string `json:"id"`
+	Actor string `json:"actor"`
+	Owner string `json:"owner,omitempty"`
+	Note  string `json:"note,omitempty"`
+}
+
 func main() {
 	addr := flag.String("addr", ":8090", "http listen addr")
 	envFile := flag.String("env-file", "configs/environments.yaml", "path to environments yaml")
 	policyFile := flag.String("policy", "configs/policies.yaml", "path to policy yaml")
 	auditFile := flag.String("audit", "audit/api.jsonl", "audit output jsonl")
 	auditDriver := flag.String("audit-driver", "jsonl", "audit store driver: jsonl|sqlite")
+	incidentStateFile := flag.String("incident-state-file", "audit/incidents.db", "sqlite state file for open incidents and ownership")
 	pendingFile := flag.String("pending-file", "audit/pending-actions.db", "pending approval requests store path")
 	pendingDriver := flag.String("pending-driver", "sqlite", "pending store driver: sqlite|json")
 	pendingTTL := flag.Duration("pending-ttl", 24*time.Hour, "expire pending requests older than this duration (0 to disable)")
@@ -203,6 +212,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	incidentStore := incident.NewSQLiteStore(*incidentStateFile)
 
 	_ = os.MkdirAll("audit", 0o755)
 	notifierImpl := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
@@ -225,6 +235,7 @@ func main() {
 		auditDriver:   strings.ToLower(strings.TrimSpace(*auditDriver)),
 		auditFile:     *auditFile,
 		auditStore:    auditStore,
+		incidentStore: incidentStore,
 		token:         strings.TrimSpace(*token),
 		approvalStore: store,
 		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
@@ -263,6 +274,10 @@ func main() {
 	mux.HandleFunc("/actions/list", s.handleListActions)
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
+	mux.HandleFunc("/incidents/active", s.handleActiveIncidents)
+	mux.HandleFunc("/incidents/get", s.handleGetIncident)
+	mux.HandleFunc("/incidents/ack", s.handleAckIncident)
+	mux.HandleFunc("/incidents/assign", s.handleAssignIncident)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "service": "ops-api"})
@@ -390,12 +405,20 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 	policyCfg, _ := policy.Load(s.policyFile)
 	recentAutoActions, _ := s.auditStore.CountRecentAutoActions(project, envName, time.Now().UTC().Add(-time.Hour))
 	report := incident.BuildReport("ops-api", envName, env, results, policyCfg, recentAutoActions)
+	record, err := s.syncIncident(report)
+	if err != nil {
+		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "incident_sync", Project: project, Env: envName, Status: "failed", Message: err.Error()})
+	}
 	if s.notifyCtl.Enabled() && truthy(r.URL.Query().Get("notify")) {
-		decision, err := s.notifyCtl.Process(r.Context(), report)
-		if err != nil {
-			_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Project: project, Env: envName, Status: "failed", Message: err.Error()})
-		} else if decision.Send {
-			_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Project: project, Env: envName, Status: "ok", Message: notify.DescribeDecision(decision)})
+		if shouldSuppressAcknowledged(record, report) {
+			_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Project: project, Env: envName, Status: "suppressed", Message: "incident acknowledged by " + record.AcknowledgedBy})
+		} else {
+			decision, err := s.notifyCtl.Process(r.Context(), report)
+			if err != nil {
+				_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Project: project, Env: envName, Status: "failed", Message: err.Error()})
+			} else if decision.Send {
+				_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Project: project, Env: envName, Status: "ok", Message: notify.DescribeDecision(decision)})
+			}
 		}
 	}
 
@@ -856,6 +879,122 @@ func (s *server) handleIncidentSummary(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(incidentSummary{WindowMinutes: window, Projects: projects, Total: total, ByStatus: byStatus, TopTargets: topTargets})
 }
 
+func (s *server) handleActiveIncidents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		fmt.Sscanf(v, "%d", &limit)
+		if limit <= 0 || limit > 500 {
+			limit = 50
+		}
+	}
+	items, err := s.incidentStore.List(incident.Filter{
+		Projects: queryProjects(r),
+		Env:      strings.TrimSpace(r.URL.Query().Get("env")),
+		Source:   strings.TrimSpace(r.URL.Query().Get("source")),
+		OpenOnly: true,
+		Limit:    limit,
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"count": len(items), "items": items})
+}
+
+func (s *server) handleGetIncident(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
+		return
+	}
+	item, ok, err := s.incidentStore.Get(id)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, `{"error":"incident not found"}`, http.StatusNotFound)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(item)
+}
+
+func (s *server) handleAckIncident(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req incidentActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Actor) == "" {
+		req.Actor = "ops-api"
+	}
+	item, err := s.incidentStore.Ack(req.ID, req.Actor, req.Note, time.Now().UTC())
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: "incident_ack", Project: item.Project, Env: item.Env, Target: item.ID, Status: "ok", Message: defaultString(req.Note, "incident acknowledged")})
+	_ = json.NewEncoder(w).Encode(item)
+}
+
+func (s *server) handleAssignIncident(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req incidentActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.Owner) == "" {
+		http.Error(w, `{"error":"id and owner required"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Actor) == "" {
+		req.Actor = "ops-api"
+	}
+	item, err := s.incidentStore.Assign(req.ID, req.Owner, req.Actor, req.Note, time.Now().UTC())
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: "incident_assign", Project: item.Project, Env: item.Env, Target: item.ID, Status: "ok", Message: "owner=" + item.Owner})
+	_ = json.NewEncoder(w).Encode(item)
+}
+
 func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -983,6 +1122,23 @@ func (s *server) projectForEnv(envName string) (string, error) {
 	return cfg.ProjectForEnv(envName), nil
 }
 
+func (s *server) syncIncident(report incident.Report) (incident.Record, error) {
+	if s.incidentStore == nil {
+		return incident.Record{}, nil
+	}
+	return s.incidentStore.SyncReport(report, time.Now().UTC())
+}
+
+func shouldSuppressAcknowledged(rec incident.Record, report incident.Report) bool {
+	if !incident.IsActionableStatus(report.Status) {
+		return false
+	}
+	if !rec.Open || !rec.Acknowledged {
+		return false
+	}
+	return strings.TrimSpace(rec.Fingerprint) == strings.TrimSpace(report.Fingerprint)
+}
+
 func (s *server) resolveAuditFile(name string) (string, error) {
 	baseDir, err := filepath.Abs(filepath.Dir(s.auditFile))
 	if err != nil {
@@ -1106,6 +1262,13 @@ func truthy(v string) bool {
 	default:
 		return false
 	}
+}
+
+func defaultString(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(v)
 }
 
 func runAction(action string, args []string, timeoutS int, host *config.Host) rbexec.Result {

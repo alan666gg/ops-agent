@@ -41,6 +41,11 @@ type IncidentSummary struct {
 	TopTargets    []string       `json:"top_targets"`
 }
 
+type IncidentListResponse struct {
+	Count int               `json:"count"`
+	Items []incident.Record `json:"items"`
+}
+
 type PendingResponse struct {
 	Count int                `json:"count"`
 	Items []approval.Request `json:"items"`
@@ -105,6 +110,61 @@ func (c OpsAPIClient) IncidentSummaryByProject(ctx context.Context, minutes int,
 
 func (c OpsAPIClient) Pending(ctx context.Context, limit int) (PendingResponse, error) {
 	return c.PendingByProject(ctx, limit, nil)
+}
+
+func (c OpsAPIClient) ActiveIncidents(ctx context.Context, limit int, env string, projects []string) (IncidentListResponse, error) {
+	var out IncidentListResponse
+	q := url.Values{}
+	q.Set("limit", fmt.Sprintf("%d", limit))
+	if strings.TrimSpace(env) != "" {
+		q.Set("env", strings.TrimSpace(env))
+	}
+	for _, project := range projects {
+		if strings.TrimSpace(project) != "" {
+			q.Add("project", strings.TrimSpace(project))
+		}
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/incidents/active?"+q.Encode(), nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c OpsAPIClient) GetIncident(ctx context.Context, id string) (incident.Record, error) {
+	var out incident.Record
+	q := url.Values{}
+	q.Set("id", strings.TrimSpace(id))
+	if err := c.doJSON(ctx, http.MethodGet, "/incidents/get?"+q.Encode(), nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c OpsAPIClient) AckIncident(ctx context.Context, id, actor, note string) (incident.Record, error) {
+	var out incident.Record
+	body := map[string]any{
+		"id":    strings.TrimSpace(id),
+		"actor": strings.TrimSpace(actor),
+		"note":  strings.TrimSpace(note),
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/incidents/ack", body, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c OpsAPIClient) AssignIncident(ctx context.Context, id, owner, actor, note string) (incident.Record, error) {
+	var out incident.Record
+	body := map[string]any{
+		"id":    strings.TrimSpace(id),
+		"owner": strings.TrimSpace(owner),
+		"actor": strings.TrimSpace(actor),
+		"note":  strings.TrimSpace(note),
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/incidents/assign", body, &out); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (c OpsAPIClient) PendingByProject(ctx context.Context, limit int, projects []string) (PendingResponse, error) {

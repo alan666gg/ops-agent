@@ -273,6 +273,36 @@ func (a Agent) toolSchemas() []responseTool {
 		},
 		{
 			Type:        "function",
+			Name:        "list_active_incidents",
+			Description: "List active incidents, optionally scoped to one environment or project.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit":   map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+					"env":     map[string]any{"type": "string"},
+					"project": map[string]any{"type": "string"},
+				},
+				"required":             []string{"limit"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "get_incident",
+			Description: "Get the full detail of one incident by incident_id.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"incident_id": map[string]any{"type": "string"},
+				},
+				"required":             []string{"incident_id"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "list_pending",
 			Description: "List pending approval requests.",
 			Strict:      true,
@@ -330,6 +360,37 @@ func (a Agent) toolSchemas() []responseTool {
 					"args":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				},
 				"required":             []string{"env", "action"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "acknowledge_incident",
+			Description: "Acknowledge one active incident by incident_id. Use this only when the user explicitly asks to acknowledge or mute follow-up noise.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"incident_id": map[string]any{"type": "string"},
+					"note":        map[string]any{"type": "string"},
+				},
+				"required":             []string{"incident_id"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
+			Name:        "assign_incident",
+			Description: "Assign one incident to an owner by incident_id. Use this only when the user explicitly asks to claim or assign it.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"incident_id": map[string]any{"type": "string"},
+					"owner":       map[string]any{"type": "string"},
+					"note":        map[string]any{"type": "string"},
+				},
+				"required":             []string{"incident_id", "owner"},
 				"additionalProperties": false,
 			},
 		},
@@ -436,6 +497,27 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 		}
 		data, err := a.OpsAPI.IncidentSummaryByProject(ctx, intFromAny(args["minutes"], 60), projects)
 		return data, "", "", err
+	case "list_active_incidents":
+		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		env := stringFromAny(args["env"])
+		if env != "" {
+			if _, err := a.authorizeEnv(actor, env); err != nil {
+				return nil, env, "", err
+			}
+		}
+		data, err := a.OpsAPI.ActiveIncidents(ctx, intFromAny(args["limit"], 10), env, projects)
+		return data, env, "", err
+	case "get_incident":
+		data, err := a.OpsAPI.GetIncident(ctx, stringFromAny(args["incident_id"]))
+		if err == nil {
+			if authErr := a.Authorizer.AuthorizeProject(actor, data.Project); authErr != nil {
+				return nil, data.Env, "", authErr
+			}
+		}
+		return data, data.Env, "", err
 	case "list_pending":
 		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
 		if err != nil {
@@ -472,6 +554,26 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 			Actor:      actor,
 		})
 		return data, env, targetHost, err
+	case "acknowledge_incident":
+		item, err := a.OpsAPI.GetIncident(ctx, stringFromAny(args["incident_id"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		if err := a.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return nil, item.Env, "", err
+		}
+		data, err := a.OpsAPI.AckIncident(ctx, item.ID, actor, stringFromAny(args["note"]))
+		return data, item.Env, "", err
+	case "assign_incident":
+		item, err := a.OpsAPI.GetIncident(ctx, stringFromAny(args["incident_id"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		if err := a.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return nil, item.Env, "", err
+		}
+		data, err := a.OpsAPI.AssignIncident(ctx, item.ID, stringFromAny(args["owner"]), actor, stringFromAny(args["note"]))
+		return data, item.Env, "", err
 	case "approve_action":
 		item, err := a.OpsAPI.GetAction(ctx, stringFromAny(args["request_id"]))
 		if err != nil {
@@ -516,6 +618,7 @@ func (a Agent) prompt() string {
 	b.WriteString("Never invent request IDs, environments, host names, or action names.\n")
 	b.WriteString("Respect project isolation. If a project is ambiguous, ask one short follow-up question instead of guessing.\n")
 	b.WriteString("Before approving or rejecting an ambiguous request, prefer listing or fetching request details first.\n")
+	b.WriteString("For incident ownership or acknowledgement, prefer listing active incidents or fetching one incident before mutating it.\n")
 	b.WriteString("Only approve_action or reject_action when the user explicitly asks to approve or reject.\n")
 	b.WriteString("When the user asks to run an operation, prefer request_action so policy and approval stay enforced.\n")
 	b.WriteString("If a tool result says confirmation_required, do not call more tools. Ask the user to reply exactly with 确认执行 or 取消.\n")
@@ -875,6 +978,9 @@ func (a Agent) auditToolEvent(actor, toolName string, args map[string]any, statu
 	if reqID := stringFromAny(args["request_id"]); reqID != "" {
 		target = reqID
 	}
+	if incidentID := stringFromAny(args["incident_id"]); incidentID != "" {
+		target = incidentID
+	}
 	_ = os.MkdirAll(filepath.Dir(a.AuditFile), 0o755)
 	_ = audit.AppendJSONL(a.AuditFile, audit.Event{
 		Time:       time.Now().UTC(),
@@ -911,6 +1017,18 @@ func summarizeToolCall(toolName string, args map[string]any) string {
 		summary := "reject_action request_id=" + stringFromAny(args["request_id"])
 		if reason := stringFromAny(args["reason"]); reason != "" {
 			summary += " reason=" + reason
+		}
+		return summary
+	case "acknowledge_incident":
+		summary := "acknowledge_incident incident_id=" + stringFromAny(args["incident_id"])
+		if note := stringFromAny(args["note"]); note != "" {
+			summary += " note=" + note
+		}
+		return summary
+	case "assign_incident":
+		summary := "assign_incident incident_id=" + stringFromAny(args["incident_id"]) + " owner=" + stringFromAny(args["owner"])
+		if note := stringFromAny(args["note"]); note != "" {
+			summary += " note=" + note
 		}
 		return summary
 	default:

@@ -7,6 +7,7 @@ import (
 
 	"github.com/alan666gg/ops-agent/internal/approval"
 	"github.com/alan666gg/ops-agent/internal/checks"
+	"github.com/alan666gg/ops-agent/internal/incident"
 )
 
 type Command struct {
@@ -14,11 +15,13 @@ type Command struct {
 	Env        string
 	Minutes    int
 	RequestID  string
+	IncidentID string
 	Status     string
 	Action     string
 	TargetHost string
 	Args       []string
 	Reason     string
+	Owner      string
 }
 
 func ParseCommand(text string) (Command, error) {
@@ -34,6 +37,17 @@ func ParseCommand(text string) (Command, error) {
 
 	switch out.Name {
 	case "start", "help", "pending", "reset":
+		return out, nil
+	case "active":
+		if len(fields) > 1 {
+			out.Env = fields[1]
+		}
+		return out, nil
+	case "incident":
+		if len(fields) < 2 {
+			return Command{}, fmt.Errorf("usage: /incident <incident_id>")
+		}
+		out.IncidentID = fields[1]
 		return out, nil
 	case "show":
 		if len(fields) < 2 {
@@ -81,6 +95,25 @@ func ParseCommand(text string) (Command, error) {
 			out.Reason = "rejected from telegram"
 		}
 		return out, nil
+	case "ack":
+		if len(fields) < 2 {
+			return Command{}, fmt.Errorf("usage: /ack <incident_id> [note]")
+		}
+		out.IncidentID = fields[1]
+		if len(fields) > 2 {
+			out.Reason = strings.Join(fields[2:], " ")
+		}
+		return out, nil
+	case "assign":
+		if len(fields) < 3 {
+			return Command{}, fmt.Errorf("usage: /assign <incident_id> <owner> [note]")
+		}
+		out.IncidentID = fields[1]
+		out.Owner = fields[2]
+		if len(fields) > 3 {
+			out.Reason = strings.Join(fields[3:], " ")
+		}
+		return out, nil
 	case "request":
 		if len(fields) < 3 {
 			return Command{}, fmt.Errorf("usage: /request <env> <action> [--target-host=name] [args...]")
@@ -108,8 +141,12 @@ func HelpText() string {
 		"/health <env>",
 		"/incidents [minutes]",
 		"/pending",
+		"/active [env]",
+		"/incident <incident_id>",
 		"/requests [status]",
 		"/show <request_id>",
+		"/ack <incident_id> [note]",
+		"/assign <incident_id> <owner> [note]",
 		"/request <env> <action> [--target-host=name] [args...]",
 		"/approve <request_id>",
 		"/reject <request_id> [reason]",
@@ -228,6 +265,50 @@ func FormatActionList(resp ActionListResponse) string {
 	return strings.Join(lines, "\n")
 }
 
+func FormatActiveIncidents(resp IncidentListResponse) string {
+	if len(resp.Items) == 0 {
+		return "no active incidents"
+	}
+	lines := []string{fmt.Sprintf("active incidents: %d", resp.Count)}
+	for i, item := range resp.Items {
+		if i >= 10 {
+			lines = append(lines, fmt.Sprintf("... and %d more", len(resp.Items)-i))
+			break
+		}
+		lines = append(lines, FormatIncidentItem(item))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatIncidentDetail(item incident.Record) string {
+	lines := []string{
+		fmt.Sprintf("incident %s", item.ID),
+		fmt.Sprintf("- status=%s", item.Status),
+		fmt.Sprintf("- project=%s", defaultString(item.Project, "default")),
+		fmt.Sprintf("- env=%s", defaultString(item.Env, "test")),
+		fmt.Sprintf("- source=%s", defaultString(item.Source, "unknown")),
+	}
+	if strings.TrimSpace(item.Owner) != "" {
+		lines = append(lines, "- owner="+item.Owner)
+	}
+	if item.Acknowledged {
+		lines = append(lines, "- acknowledged_by="+item.AcknowledgedBy)
+	}
+	if strings.TrimSpace(item.Summary) != "" {
+		lines = append(lines, "- summary="+trimForChat(item.Summary, 200))
+	}
+	for i, highlight := range item.Highlights {
+		if i >= 3 {
+			break
+		}
+		lines = append(lines, "- highlight "+trimForChat(highlight, 160))
+	}
+	if strings.TrimSpace(item.Note) != "" {
+		lines = append(lines, "- note="+trimForChat(item.Note, 160))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func FormatActionDetail(item approval.Request) string {
 	lines := []string{
 		fmt.Sprintf("request %s", item.ID),
@@ -252,6 +333,20 @@ func FormatActionDetail(item approval.Request) string {
 		lines = append(lines, "- result="+trimForChat(item.Result, 200))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func FormatIncidentItem(item incident.Record) string {
+	line := fmt.Sprintf("%s [%s] project=%s env=%s", item.ID, strings.ToUpper(item.Status), defaultString(item.Project, "default"), defaultString(item.Env, "test"))
+	if strings.TrimSpace(item.Owner) != "" {
+		line += " owner=" + item.Owner
+	}
+	if item.Acknowledged {
+		line += " acked_by=" + item.AcknowledgedBy
+	}
+	if strings.TrimSpace(item.Summary) != "" {
+		line += " summary=" + trimForChat(item.Summary, 100)
+	}
+	return line
 }
 
 func FormatPendingItem(item approval.Request) string {

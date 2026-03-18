@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/alan666gg/ops-agent/internal/approval"
+	"github.com/alan666gg/ops-agent/internal/incident"
 )
 
 func TestOpsAPIClientHealthAndApprove(t *testing.T) {
@@ -19,6 +20,10 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 		switch r.URL.Path {
 		case "/health/run":
 			return jsonResponse(http.StatusOK, HealthResponse{Env: "prod", Status: "fail", Summary: "bad"}), nil
+		case "/incidents/active":
+			return jsonResponse(http.StatusOK, IncidentListResponse{Count: 1, Items: []incident.Record{{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"}}}), nil
+		case "/incidents/get":
+			return jsonResponse(http.StatusOK, incident.Record{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"}), nil
 		case "/actions/get":
 			return jsonResponse(http.StatusOK, approval.Request{ID: "r1", Action: "restart_container", Status: "pending"}), nil
 		case "/actions/list":
@@ -54,6 +59,20 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 	}
 	if list.Count != 1 || len(list.Items) != 1 || list.Items[0].ID != "r1" {
 		t.Fatalf("unexpected list response: %+v", list)
+	}
+	incidents, err := api.ActiveIncidents(context.Background(), 10, "prod", []string{"core"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incidents.Count != 1 || len(incidents.Items) != 1 || incidents.Items[0].Project != "core" {
+		t.Fatalf("unexpected incident list response: %+v", incidents)
+	}
+	incidentItem, err := api.GetIncident(context.Background(), "ops-scheduler|core|prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incidentItem.ID == "" || incidentItem.Project != "core" {
+		t.Fatalf("unexpected incident detail response: %+v", incidentItem)
 	}
 
 	resp, err := api.Approve(context.Background(), "r1", "tg:@ops", 30)

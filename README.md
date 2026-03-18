@@ -115,7 +115,7 @@ API (minimal control plane):
 export OPS_API_TOKEN=change-me
 go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2
 # recommended for larger history windows and incident summaries
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --pending-driver sqlite --pending-file audit/pending-actions.db
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --pending-driver sqlite --pending-file audit/pending-actions.db
 ```
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
@@ -137,6 +137,10 @@ Telegram commands:
 /reset
 /health prod
 /incidents 60
+/active prod
+/incident <incident_id>
+/ack <incident_id> taking ownership
+/assign <incident_id> alice on it
 /pending
 /requests pending
 /show <request_id>
@@ -150,6 +154,9 @@ Telegram natural language:
 ```text
 prod 现在状态怎么样
 最近 2 小时有什么异常
+列出 prod 的活跃事故
+把 prod 那个 incident 先 ack 掉
+把 prod 那个事故分给 alice
 申请重启 app-1 上的 cicdtest-app
 把刚才那个审批通过
 确认执行
@@ -196,6 +203,16 @@ curl -s -X POST http://127.0.0.1:8090/actions/approve \
 
 curl -s "http://127.0.0.1:8090/audit/tail?file=api.jsonl&limit=20" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60&project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s "http://127.0.0.1:8090/incidents/active?project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s "http://127.0.0.1:8090/incidents/get?id=ops-scheduler|core|prod" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s -X POST http://127.0.0.1:8090/incidents/ack \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -d '{"id":"ops-scheduler|core|prod","actor":"ops-oncall","note":"investigating"}'
+curl -s -X POST http://127.0.0.1:8090/incidents/assign \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -d '{"id":"ops-scheduler|core|prod","owner":"alice","actor":"ops-lead","note":"primary responder"}'
 curl -s "http://127.0.0.1:8090/metrics"
 ```
 
@@ -214,6 +231,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `service_runtime_*` and `service_logs_*` are treated as service-scoped signals, so container flapping and recent systemd error logs show up in the same incident context as the parent service.
 - `/health` and `/health/run` responses now include `highlights`, which bubble the most actionable runtime/log signals to the top for Telegram and LLM consumers.
 - `environments.<env>.project` adds a first-class project boundary; actions, incident summaries, and Telegram access control can now be scoped by project.
+- `audit-driver sqlite` + `incident-state-file` upgrades the control plane from append-only logs to a queryable state model with active incidents, acknowledgements, and ownership.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 - `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.
@@ -227,12 +245,14 @@ curl -s "http://127.0.0.1:8090/metrics"
 - Active silences and maintenance windows suppress notifications without stopping health checks; if an issue survives the mute window, the controller will deliver it after the window ends.
 - `--notify-trigger-after` and `--notify-recovery-after` let you suppress flapping by requiring consecutive unhealthy or healthy cycles before opening or closing an incident.
 - Health responses now include `summary`, `suggestions`, and `suppressed_checks` so callers can distinguish root causes from downstream symptoms.
+- Acknowledged incidents now suppress duplicate follow-up notifications until the fingerprint changes again, so ownership and ack actually reduce noise instead of just adding metadata.
 
 ## ChatOps
 
 - `cmd/ops-telegram` is a thin Telegram front-end over `ops-api`; it does not execute runbooks directly.
 - Slash commands and approval buttons always work without any LLM.
 - `/pending` now includes `View / Approve / Reject` inline buttons, and high-risk LLM actions expose `Confirm / Cancel` buttons as a safer alternative to free-text confirmation.
+- `/active`, `/incident`, `/ack`, and `/assign` turn Telegram into a real incident room: responders can see what is currently open, acknowledge it, and claim ownership without leaving chat.
 - If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.
 - The LLM is a planner only: it can read health/incidents/pending requests and submit approve/reject/request actions through `ops-api`, so policy, approval, audit, and execution still stay in `ops-api` + `ops-worker`.
 - `/requests [status]` and `/show <request_id>` make request detail lookup explicit, so operators and the LLM can inspect a concrete request before approving or rejecting it.

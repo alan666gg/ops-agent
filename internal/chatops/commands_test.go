@@ -44,6 +44,22 @@ func TestParseCommandHealthAndRequest(t *testing.T) {
 	if cmd.Name != "show" || cmd.RequestID != "r1" {
 		t.Fatalf("unexpected show command: %+v", cmd)
 	}
+
+	cmd, err = ParseCommand("/ack ops-scheduler|core|prod taking ownership")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "ack" || cmd.IncidentID != "ops-scheduler|core|prod" {
+		t.Fatalf("unexpected ack command: %+v", cmd)
+	}
+
+	cmd, err = ParseCommand("/assign ops-scheduler|core|prod alice on it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "assign" || cmd.IncidentID != "ops-scheduler|core|prod" || cmd.Owner != "alice" {
+		t.Fatalf("unexpected assign command: %+v", cmd)
+	}
 }
 
 func TestParseCommandRejectRequiresRequestID(t *testing.T) {
@@ -99,6 +115,40 @@ func TestFormatIncidentSummaryIncludesProjects(t *testing.T) {
 	})
 	if !strings.Contains(text, "projects: payments") {
 		t.Fatalf("unexpected pending text: %s", text)
+	}
+}
+
+func TestFormatActiveIncidents(t *testing.T) {
+	text := FormatActiveIncidents(IncidentListResponse{
+		Count: 1,
+		Items: []incident.Record{
+			{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail", Owner: "alice", Summary: "api unhealthy"},
+		},
+	})
+	for _, want := range []string{"active incidents: 1", "project=core", "owner=alice"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+}
+
+func TestFormatIncidentDetail(t *testing.T) {
+	text := FormatIncidentDetail(incident.Record{
+		ID:             "ops-scheduler|core|prod",
+		Project:        "core",
+		Env:            "prod",
+		Source:         "ops-scheduler",
+		Status:         "fail",
+		Owner:          "alice",
+		Acknowledged:   true,
+		AcknowledgedBy: "tg:@ops",
+		Summary:        "api unhealthy",
+		Highlights:     []string{"service_api [HTTP_DOWN] connection refused"},
+	})
+	for _, want := range []string{"incident ops-scheduler|core|prod", "owner=alice", "acknowledged_by=tg:@ops"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/alan666gg/ops-agent/internal/approval"
+	"github.com/alan666gg/ops-agent/internal/incident"
 )
 
 type TelegramClient struct {
@@ -235,6 +236,39 @@ func ActionMarkup(item approval.Request) any {
 	default:
 		return nil
 	}
+}
+
+func IncidentListMarkup(items []incident.Record) any {
+	if len(items) == 0 {
+		return nil
+	}
+	rows := make([][]inlineButton, 0, len(items))
+	for i, item := range items {
+		if i >= 5 {
+			break
+		}
+		rows = append(rows, []inlineButton{
+			{Text: "View " + item.Env, CallbackData: "incident_show:" + item.ID},
+			{Text: "Ack", CallbackData: "incident_ack:" + item.ID},
+			{Text: "Claim", CallbackData: "incident_assign:" + item.ID},
+		})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return replyMarkup{InlineKeyboard: rows}
+}
+
+func IncidentMarkup(item incident.Record) any {
+	if !item.Open {
+		return nil
+	}
+	return replyMarkup{InlineKeyboard: [][]inlineButton{
+		{
+			{Text: "Ack", CallbackData: "incident_ack:" + item.ID},
+			{Text: "Claim", CallbackData: "incident_assign:" + item.ID},
+		},
+	}}
 }
 
 func ConfirmationMarkup() any {

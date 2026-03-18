@@ -24,6 +24,7 @@ func main() {
 	interval := flag.Duration("interval", 5*time.Minute, "check interval")
 	auditFile := flag.String("audit", "audit/scheduler.jsonl", "audit jsonl output")
 	auditDriver := flag.String("audit-driver", "jsonl", "audit store driver: jsonl|sqlite")
+	incidentStateFile := flag.String("incident-state-file", "audit/incidents.db", "sqlite state file for open incidents and ownership")
 	policyFile := flag.String("policy", "configs/policies.yaml", "policy file")
 	notifyWebhook := flag.String("notify-webhook", "", "generic webhook URL for health incident notifications")
 	slackWebhook := flag.String("notify-slack-webhook", "", "Slack incoming webhook URL for health incident notifications")
@@ -74,6 +75,7 @@ func main() {
 		fmt.Println("open audit store error:", err)
 		os.Exit(1)
 	}
+	incidentStore := incident.NewSQLiteStore(*incidentStateFile)
 	notifier := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
 	var resolver notify.DeliveryResolver
 	if strings.TrimSpace(*notifyConfigFile) != "" {
@@ -229,28 +231,52 @@ func main() {
 		policyCfg, _ := policy.Load(*policyFile)
 		recentAutoActions, _ := auditStore.CountRecentAutoActions(project, *envName, time.Now().UTC().Add(-time.Hour))
 		report := incident.BuildReport("ops-scheduler", *envName, env, results, policyCfg, recentAutoActions)
+		record, err := syncIncident(incidentStore, report)
+		if err != nil {
+			_ = auditStore.Append(audit.Event{
+				Time:    time.Now().UTC(),
+				Actor:   "ops-scheduler",
+				Action:  "incident_sync",
+				Project: project,
+				Env:     *envName,
+				Status:  "failed",
+				Message: err.Error(),
+			})
+		}
 		if notifyCtl.Enabled() {
-			decision, err := notifyCtl.Process(ctx, report)
-			if err != nil {
+			if suppressAcknowledged(record, report) {
 				_ = auditStore.Append(audit.Event{
 					Time:    time.Now().UTC(),
 					Actor:   "ops-scheduler",
 					Action:  "notify",
 					Project: project,
 					Env:     *envName,
-					Status:  "failed",
-					Message: err.Error(),
+					Status:  "suppressed",
+					Message: "incident acknowledged by " + record.AcknowledgedBy,
 				})
-			} else if decision.Send {
-				_ = auditStore.Append(audit.Event{
-					Time:    time.Now().UTC(),
-					Actor:   "ops-scheduler",
-					Action:  "notify",
-					Project: project,
-					Env:     *envName,
-					Status:  "ok",
-					Message: notify.DescribeDecision(decision),
-				})
+			} else {
+				decision, err := notifyCtl.Process(ctx, report)
+				if err != nil {
+					_ = auditStore.Append(audit.Event{
+						Time:    time.Now().UTC(),
+						Actor:   "ops-scheduler",
+						Action:  "notify",
+						Project: project,
+						Env:     *envName,
+						Status:  "failed",
+						Message: err.Error(),
+					})
+				} else if decision.Send {
+					_ = auditStore.Append(audit.Event{
+						Time:    time.Now().UTC(),
+						Actor:   "ops-scheduler",
+						Action:  "notify",
+						Project: project,
+						Env:     *envName,
+						Status:  "ok",
+						Message: notify.DescribeDecision(decision),
+					})
+				}
 			}
 		}
 	}
@@ -351,4 +377,21 @@ func schedulerResultStatus(r checks.Result) string {
 	default:
 		return "ok"
 	}
+}
+
+func syncIncident(store incident.Store, report incident.Report) (incident.Record, error) {
+	if store == nil {
+		return incident.Record{}, nil
+	}
+	return store.SyncReport(report, time.Now().UTC())
+}
+
+func suppressAcknowledged(rec incident.Record, report incident.Report) bool {
+	if !incident.IsActionableStatus(report.Status) {
+		return false
+	}
+	if !rec.Open || !rec.Acknowledged {
+		return false
+	}
+	return strings.TrimSpace(rec.Fingerprint) == strings.TrimSpace(report.Fingerprint)
 }
