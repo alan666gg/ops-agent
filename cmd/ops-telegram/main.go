@@ -21,10 +21,12 @@ func main() {
 	pollTimeout := flag.Duration("poll-timeout", 20*time.Second, "telegram getUpdates long poll timeout")
 	approveTimeout := flag.Int("approve-timeout-seconds", 30, "timeout passed to /actions/approve")
 	telegramBase := flag.String("telegram-base", "", "override telegram api base url")
+	auditFile := flag.String("audit", "audit/telegram.jsonl", "audit output jsonl for telegram chatops and llm actions")
 	openAIAPIKey := flag.String("openai-api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key for natural-language chat")
 	openAIBase := flag.String("openai-base", os.Getenv("OPENAI_BASE_URL"), "override OpenAI-compatible Responses API base url")
 	openAIModel := flag.String("openai-model", envOrDefault("OPENAI_MODEL", "gpt-5-mini"), "OpenAI model for natural-language chat")
 	llmStateFile := flag.String("llm-state-file", "audit/telegram-openai-response.txt", "file storing previous OpenAI response id")
+	llmConfirmFile := flag.String("llm-confirm-file", "audit/telegram-openai-confirmation.json", "file base used for pending natural-language confirmations")
 	llmMaxToolRounds := flag.Int("llm-max-tool-rounds", 6, "maximum number of tool-calling rounds for one Telegram message")
 	flag.Parse()
 
@@ -47,8 +49,11 @@ func main() {
 		},
 		OpsAPI:         apiClient,
 		State:          chatops.ConversationStateStore{Path: *llmStateFile},
+		Confirmations:  chatops.ConfirmationStore{Path: *llmConfirmFile},
+		AuditFile:      *auditFile,
 		ApproveTimeout: *approveTimeout,
 		MaxToolRounds:  *llmMaxToolRounds,
+		ConfirmTTL:     10 * time.Minute,
 	}
 	tg := chatops.TelegramClient{
 		BotToken: strings.TrimSpace(*botToken),
@@ -94,13 +99,20 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent cha
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 		defer cancel()
+		actor := actorForUser(msg.From)
 		if strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
-			return handleCommandUpdate(ctx, tg, api, agent, *msg, approveTimeout)
+			return handleCommandUpdate(ctx, tg, api, agent, *msg, actor, approveTimeout)
+		}
+		if reply, handled, err := agent.HandleConfirmation(ctx, msg.Text, actor); handled {
+			if err != nil {
+				return tg.SendMessage(ctx, msg.Chat.ID, "确认处理失败："+err.Error(), nil)
+			}
+			return tg.SendMessage(ctx, msg.Chat.ID, reply, nil)
 		}
 		if !agent.Enabled() {
 			return tg.SendMessage(ctx, msg.Chat.ID, "LLM 未配置，当前请先使用 /help 查看可用命令。", nil)
 		}
-		reply, err := agent.Run(ctx, msg.Text, actorForUser(msg.From))
+		reply, err := agent.Run(ctx, msg.Text, actor)
 		if err != nil {
 			return tg.SendMessage(ctx, msg.Chat.ID, "LLM 处理失败："+err.Error()+"\n\n你也可以先用 /help 查看命令模式。", nil)
 		}
@@ -115,7 +127,7 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent cha
 			return nil
 		}
 		if agent.Enabled() {
-			_ = agent.Reset()
+			_ = agent.ResetActor(actorForUser(cb.From))
 		}
 		reply, err := handleCallback(context.Background(), api, cb.Data, actorForUser(cb.From), approveTimeout)
 		if err != nil {
@@ -129,10 +141,10 @@ func handleUpdate(tg chatops.TelegramClient, api chatops.OpsAPIClient, agent cha
 	}
 }
 
-func handleCommandUpdate(ctx context.Context, tg chatops.TelegramClient, api chatops.OpsAPIClient, agent chatops.Agent, msg chatops.Message, approveTimeout int) error {
+func handleCommandUpdate(ctx context.Context, tg chatops.TelegramClient, api chatops.OpsAPIClient, agent chatops.Agent, msg chatops.Message, actor string, approveTimeout int) error {
 	cmd, err := chatops.ParseCommand(msg.Text)
 	if agent.Enabled() {
-		_ = agent.Reset()
+		_ = agent.ResetActor(actor)
 	}
 	if err != nil {
 		return tg.SendMessage(ctx, msg.Chat.ID, err.Error()+"\n\n"+chatops.HelpText(), nil)
@@ -140,7 +152,7 @@ func handleCommandUpdate(ctx context.Context, tg chatops.TelegramClient, api cha
 	if cmd.Name == "reset" {
 		return tg.SendMessage(ctx, msg.Chat.ID, "LLM 上下文已重置。", nil)
 	}
-	reply, markup := executeCommand(ctx, api, cmd, actorForUser(msg.From), approveTimeout)
+	reply, markup := executeCommand(ctx, api, cmd, actor, approveTimeout)
 	if strings.TrimSpace(reply) == "" {
 		return nil
 	}

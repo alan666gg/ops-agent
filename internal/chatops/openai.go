@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/alan666gg/ops-agent/internal/actions"
+	"github.com/alan666gg/ops-agent/internal/audit"
 )
 
 type OpenAIClient struct {
@@ -31,9 +32,23 @@ type Agent struct {
 	OpenAI         OpenAIClient
 	OpsAPI         OpsAPIClient
 	State          ConversationStateStore
+	Confirmations  ConfirmationStore
+	AuditFile      string
 	ApproveTimeout int
 	MaxToolRounds  int
+	ConfirmTTL     time.Duration
 	SystemPrompt   string
+}
+
+type ConfirmationStore struct {
+	Path string
+}
+
+type PendingConfirmation struct {
+	ToolName  string         `json:"tool_name"`
+	Arguments map[string]any `json:"arguments"`
+	Summary   string         `json:"summary"`
+	CreatedAt time.Time      `json:"created_at"`
 }
 
 type responseRequest struct {
@@ -85,31 +100,76 @@ type toolOutput struct {
 	Output string `json:"output"`
 }
 
+type toolExecution struct {
+	Output      string
+	DirectReply string
+	Stop        bool
+}
+
 func (a Agent) Enabled() bool {
 	return strings.TrimSpace(a.OpenAI.APIKey) != ""
 }
 
 func (a Agent) Reset() error {
-	return a.State.Clear()
+	return a.ResetActor("")
+}
+
+func (a Agent) ResetActor(actor string) error {
+	if err := a.State.Clear(actor); err != nil {
+		return err
+	}
+	return a.Confirmations.Clear(actor)
 }
 
 func (a Agent) Run(ctx context.Context, userInput, actor string) (string, error) {
 	if !a.Enabled() {
 		return "", fmt.Errorf("llm is not configured")
 	}
-	previous, _ := a.State.Load()
+	previous, _ := a.State.Load(actor)
 	text, responseID, err := a.runWithState(ctx, userInput, actor, previous)
 	if err != nil && previous != "" && strings.Contains(strings.ToLower(err.Error()), "previous_response_id") {
-		_ = a.State.Clear()
+		_ = a.State.Clear(actor)
 		text, responseID, err = a.runWithState(ctx, userInput, actor, "")
 	}
 	if err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(responseID) != "" {
-		_ = a.State.Save(responseID)
+		_ = a.State.Save(actor, responseID)
 	}
 	return text, nil
+}
+
+func (a Agent) HandleConfirmation(ctx context.Context, userInput, actor string) (string, bool, error) {
+	input := strings.TrimSpace(userInput)
+	if input == "" {
+		return "", false, nil
+	}
+	if !isConfirmText(input) && !isCancelText(input) {
+		return "", false, nil
+	}
+	pending, ok, err := a.loadPendingConfirmation(actor)
+	if err != nil {
+		return "", true, err
+	}
+	if !ok {
+		if isConfirmText(input) || isCancelText(input) {
+			return "当前没有待确认的高风险操作。", true, nil
+		}
+		return "", false, nil
+	}
+	if isCancelText(input) {
+		_ = a.Confirmations.Clear(actor)
+		a.auditToolEvent(actor, pending.ToolName, pending.Arguments, "cancelled", pending.Summary)
+		return "已取消待确认操作：" + pending.Summary, true, nil
+	}
+	reply, err := a.executeConfirmedTool(ctx, pending, actor)
+	if err != nil {
+		return "", true, err
+	}
+	_ = a.Confirmations.Clear(actor)
+	_ = a.State.Clear(actor)
+	return reply, true, nil
 }
 
 func (a Agent) runWithState(ctx context.Context, userInput, actor, previous string) (string, string, error) {
@@ -144,11 +204,14 @@ func (a Agent) runWithState(ctx context.Context, userInput, actor, previous stri
 		}
 		toolOutputs := make([]toolOutput, 0, len(calls))
 		for _, call := range calls {
-			output := a.executeTool(ctx, call, actor)
+			exec := a.executeTool(ctx, call, actor)
+			if exec.Stop {
+				return exec.DirectReply, lastID, nil
+			}
 			toolOutputs = append(toolOutputs, toolOutput{
 				Type:   "function_call_output",
 				CallID: call.CallID,
-				Output: output,
+				Output: exec.Output,
 			})
 		}
 		resp, err = a.OpenAI.Create(ctx, responseRequest{
@@ -264,7 +327,7 @@ func (a Agent) toolSchemas() []responseTool {
 	}
 }
 
-func (a Agent) executeTool(ctx context.Context, call responseOutputItem, actor string) string {
+func (a Agent) executeTool(ctx context.Context, call responseOutputItem, actor string) toolExecution {
 	respond := func(data any, err error) string {
 		payload := map[string]any{"ok": err == nil}
 		if err != nil {
@@ -278,44 +341,77 @@ func (a Agent) executeTool(ctx context.Context, call responseOutputItem, actor s
 
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
-		return respond(nil, fmt.Errorf("invalid tool arguments: %w", err))
+		return toolExecution{Output: respond(nil, fmt.Errorf("invalid tool arguments: %w", err))}
 	}
-	switch call.Name {
+	if a.requiresConfirmation(call.Name, args) {
+		pending := PendingConfirmation{
+			ToolName:  call.Name,
+			Arguments: args,
+			Summary:   summarizeToolCall(call.Name, args),
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := a.Confirmations.Save(actor, pending); err != nil {
+			return toolExecution{Output: respond(nil, fmt.Errorf("save confirmation: %w", err))}
+		}
+		a.auditToolEvent(actor, call.Name, args, "confirmation_required", pending.Summary)
+		return toolExecution{
+			Output: respond(map[string]any{
+				"confirmation_required": true,
+				"summary":               pending.Summary,
+				"instructions":          "ask the user to reply with 确认执行 or 取消",
+			}, nil),
+			DirectReply: "这个操作属于高风险变更，已进入二次确认。\n待确认内容：" + pending.Summary + "\n\n请回复“确认执行”继续，或回复“取消”放弃。",
+			Stop:        true,
+		}
+	}
+	data, _, _, err := a.executeToolCall(ctx, call.Name, args, actor)
+	status := "ok"
+	if err != nil {
+		status = "failed"
+	}
+	a.auditToolEvent(actor, call.Name, args, status, summarizeToolResult(data, err))
+	return toolExecution{Output: respond(data, err)}
+}
+
+func (a Agent) executeToolCall(ctx context.Context, name string, args map[string]any, actor string) (any, string, string, error) {
+	switch name {
 	case "get_health":
 		env, _ := args["env"].(string)
 		data, err := a.OpsAPI.Health(ctx, env)
-		return respond(data, err)
+		return data, env, "", err
 	case "get_incident_summary":
 		data, err := a.OpsAPI.IncidentSummary(ctx, intFromAny(args["minutes"], 60))
-		return respond(data, err)
+		return data, "", "", err
 	case "list_pending":
 		data, err := a.OpsAPI.Pending(ctx, intFromAny(args["limit"], 10))
-		return respond(data, err)
+		return data, "", "", err
 	case "request_action":
+		env := stringFromAny(args["env"])
+		targetHost := stringFromAny(args["target_host"])
 		data, err := a.OpsAPI.RequestAction(ctx, RequestActionRequest{
-			Env:        stringFromAny(args["env"]),
+			Env:        env,
 			Action:     stringFromAny(args["action"]),
-			TargetHost: stringFromAny(args["target_host"]),
+			TargetHost: targetHost,
 			Args:       stringSliceFromAny(args["args"]),
 			Actor:      actor,
 		})
-		return respond(data, err)
+		return data, env, targetHost, err
 	case "approve_action":
 		timeout := intFromAny(args["timeout_seconds"], a.ApproveTimeout)
 		if timeout <= 0 {
 			timeout = 30
 		}
 		data, err := a.OpsAPI.Approve(ctx, stringFromAny(args["request_id"]), actor, timeout)
-		return respond(data, err)
+		return data, "", "", err
 	case "reject_action":
 		reason := stringFromAny(args["reason"])
 		if strings.TrimSpace(reason) == "" {
 			reason = "rejected from llm agent"
 		}
 		data, err := a.OpsAPI.Reject(ctx, stringFromAny(args["request_id"]), actor, reason)
-		return respond(data, err)
+		return data, "", "", err
 	default:
-		return respond(nil, fmt.Errorf("unsupported tool %q", call.Name))
+		return nil, "", "", fmt.Errorf("unsupported tool %q", name)
 	}
 }
 
@@ -330,6 +426,7 @@ func (a Agent) prompt() string {
 	b.WriteString("Never invent request IDs, environments, host names, or action names.\n")
 	b.WriteString("Only approve_action or reject_action when the user explicitly asks to approve or reject.\n")
 	b.WriteString("When the user asks to run an operation, prefer request_action so policy and approval stay enforced.\n")
+	b.WriteString("If a tool result says confirmation_required, do not call more tools. Ask the user to reply exactly with 确认执行 or 取消.\n")
 	b.WriteString("If required information is missing, ask one concise follow-up question.\n")
 	b.WriteString("Keep answers concise and operationally clear.\n")
 	b.WriteString("Available actions: ")
@@ -393,11 +490,12 @@ func (c OpenAIClient) Create(ctx context.Context, req responseRequest) (response
 	return out, nil
 }
 
-func (s ConversationStateStore) Load() (string, error) {
-	if strings.TrimSpace(s.Path) == "" {
+func (s ConversationStateStore) Load(actor string) (string, error) {
+	path := s.pathFor(actor)
+	if strings.TrimSpace(path) == "" {
 		return "", nil
 	}
-	b, err := os.ReadFile(s.Path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -407,24 +505,105 @@ func (s ConversationStateStore) Load() (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-func (s ConversationStateStore) Save(id string) error {
-	if strings.TrimSpace(s.Path) == "" {
+func (s ConversationStateStore) Save(actor, id string) error {
+	path := s.pathFor(actor)
+	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(s.Path, []byte(strings.TrimSpace(id)), 0o644)
+	return os.WriteFile(path, []byte(strings.TrimSpace(id)), 0o644)
 }
 
-func (s ConversationStateStore) Clear() error {
-	if strings.TrimSpace(s.Path) == "" {
+func (s ConversationStateStore) Clear(actor string) error {
+	path := s.pathFor(actor)
+	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	if err := os.Remove(s.Path); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
+}
+
+func (s ConversationStateStore) pathFor(actor string) string {
+	if strings.TrimSpace(s.Path) == "" {
+		return ""
+	}
+	if strings.TrimSpace(actor) == "" {
+		return s.Path
+	}
+	dir := filepath.Dir(s.Path)
+	base := filepath.Base(s.Path)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	if name == "" {
+		name = "state"
+	}
+	return filepath.Join(dir, name+"__"+safeFileKey(actor)+ext)
+}
+
+func (s ConfirmationStore) Load(actor string) (PendingConfirmation, bool, error) {
+	path := s.pathFor(actor)
+	if strings.TrimSpace(path) == "" {
+		return PendingConfirmation{}, false, nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return PendingConfirmation{}, false, nil
+		}
+		return PendingConfirmation{}, false, err
+	}
+	var pending PendingConfirmation
+	if err := json.Unmarshal(b, &pending); err != nil {
+		return PendingConfirmation{}, false, err
+	}
+	return pending, true, nil
+}
+
+func (s ConfirmationStore) Save(actor string, pending PendingConfirmation) error {
+	path := s.pathFor(actor)
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(pending, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
+}
+
+func (s ConfirmationStore) Clear(actor string) error {
+	path := s.pathFor(actor)
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (s ConfirmationStore) pathFor(actor string) string {
+	if strings.TrimSpace(s.Path) == "" {
+		return ""
+	}
+	if strings.TrimSpace(actor) == "" {
+		return s.Path
+	}
+	dir := filepath.Dir(s.Path)
+	base := filepath.Base(s.Path)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	if name == "" {
+		name = "confirmation"
+	}
+	return filepath.Join(dir, name+"__"+safeFileKey(actor)+ext)
 }
 
 func functionCalls(resp responseAPIResponse) []responseOutputItem {
@@ -494,4 +673,176 @@ func stringSliceFromAny(v any) []string {
 		}
 	}
 	return out
+}
+
+func (a Agent) requiresConfirmation(toolName string, args map[string]any) bool {
+	switch toolName {
+	case "approve_action", "reject_action":
+		return true
+	case "request_action":
+		action := stringFromAny(args["action"])
+		return !strings.HasPrefix(action, "check_")
+	default:
+		return false
+	}
+}
+
+func (a Agent) loadPendingConfirmation(actor string) (PendingConfirmation, bool, error) {
+	pending, ok, err := a.Confirmations.Load(actor)
+	if err != nil || !ok {
+		return pending, ok, err
+	}
+	ttl := a.ConfirmTTL
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	if pending.CreatedAt.IsZero() || time.Since(pending.CreatedAt) <= ttl {
+		return pending, true, nil
+	}
+	_ = a.Confirmations.Clear(actor)
+	return PendingConfirmation{}, false, nil
+}
+
+func (a Agent) executeConfirmedTool(ctx context.Context, pending PendingConfirmation, actor string) (string, error) {
+	data, _, _, err := a.executeToolCall(ctx, pending.ToolName, pending.Arguments, actor)
+	status := "ok"
+	if err != nil {
+		status = "failed"
+	}
+	a.auditToolEvent(actor, pending.ToolName, pending.Arguments, "confirmation_executed", pending.Summary)
+	a.auditToolEvent(actor, pending.ToolName, pending.Arguments, status, summarizeToolResult(data, err))
+	if err != nil {
+		return "", err
+	}
+	switch pending.ToolName {
+	case "request_action":
+		resp, _ := data.(RequestActionResponse)
+		return fmt.Sprintf("已确认并提交操作。\nstatus=%s\nrequest_id=%s\nmessage=%s", resp.Status, defaultString(resp.RequestID, "(none)"), strings.TrimSpace(resp.Message)), nil
+	case "approve_action":
+		resp, _ := data.(ActionResponse)
+		return fmt.Sprintf("已确认并批准请求。\nstatus=%s\nmessage=%s", resp.Status, strings.TrimSpace(resp.Message)), nil
+	case "reject_action":
+		resp, _ := data.(ActionResponse)
+		return fmt.Sprintf("已确认并拒绝请求。\nstatus=%s\nmessage=%s", resp.Status, strings.TrimSpace(resp.Message)), nil
+	default:
+		return "已确认执行。", nil
+	}
+}
+
+func (a Agent) auditToolEvent(actor, toolName string, args map[string]any, status, message string) {
+	if strings.TrimSpace(a.AuditFile) == "" {
+		return
+	}
+	env := stringFromAny(args["env"])
+	targetHost := stringFromAny(args["target_host"])
+	target := toolName
+	if reqID := stringFromAny(args["request_id"]); reqID != "" {
+		target = reqID
+	}
+	_ = os.MkdirAll(filepath.Dir(a.AuditFile), 0o755)
+	_ = audit.AppendJSONL(a.AuditFile, audit.Event{
+		Time:       time.Now().UTC(),
+		Actor:      actor,
+		Action:     "llm_" + toolName,
+		Env:        env,
+		TargetHost: targetHost,
+		Target:     target,
+		Status:     status,
+		Message:    trimForAudit(message),
+	})
+}
+
+func summarizeToolCall(toolName string, args map[string]any) string {
+	switch toolName {
+	case "request_action":
+		parts := []string{"request_action"}
+		if env := stringFromAny(args["env"]); env != "" {
+			parts = append(parts, "env="+env)
+		}
+		if action := stringFromAny(args["action"]); action != "" {
+			parts = append(parts, "action="+action)
+		}
+		if host := stringFromAny(args["target_host"]); host != "" {
+			parts = append(parts, "target_host="+host)
+		}
+		if items := stringSliceFromAny(args["args"]); len(items) > 0 {
+			parts = append(parts, "args="+strings.Join(items, ","))
+		}
+		return strings.Join(parts, " ")
+	case "approve_action":
+		return "approve_action request_id=" + stringFromAny(args["request_id"])
+	case "reject_action":
+		summary := "reject_action request_id=" + stringFromAny(args["request_id"])
+		if reason := stringFromAny(args["reason"]); reason != "" {
+			summary += " reason=" + reason
+		}
+		return summary
+	default:
+		b, _ := json.Marshal(args)
+		return toolName + " " + trimForAudit(string(b))
+	}
+}
+
+func summarizeToolResult(data any, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	b, marshalErr := json.Marshal(data)
+	if marshalErr != nil {
+		return "ok"
+	}
+	return string(b)
+}
+
+func isConfirmText(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "确认", "确认执行", "确认一下", "yes", "yes confirm", "confirm":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCancelText(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "取消", "取消执行", "算了", "cancel", "abort", "no":
+		return true
+	default:
+		return false
+	}
+}
+
+func safeFileKey(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "default"
+	}
+	return out
+}
+
+func trimForAudit(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) <= 500 {
+		return v
+	}
+	return v[:497] + "..."
 }
