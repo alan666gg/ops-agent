@@ -190,6 +190,19 @@ func (c OpsAPIClient) AckIncident(ctx context.Context, id, actor, note string) (
 	return out, nil
 }
 
+func (c OpsAPIClient) UnsilenceIncident(ctx context.Context, id, actor, note string) (incident.Record, error) {
+	var out incident.Record
+	body := map[string]any{
+		"id":    strings.TrimSpace(id),
+		"actor": strings.TrimSpace(actor),
+		"note":  strings.TrimSpace(note),
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/incidents/unsilence", body, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 func (c OpsAPIClient) AssignIncident(ctx context.Context, id, owner, actor, note string) (incident.Record, error) {
 	var out incident.Record
 	body := map[string]any{

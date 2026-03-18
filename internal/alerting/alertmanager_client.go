@@ -97,6 +97,40 @@ func (c AlertmanagerClient) CreateSilence(ctx context.Context, ref *incident.Ext
 	return strings.TrimSpace(out.SilenceID), nil
 }
 
+func (c AlertmanagerClient) ExpireSilence(ctx context.Context, baseURL, silenceID string) error {
+	baseURL = strings.TrimSpace(baseURL)
+	silenceID = strings.TrimSpace(silenceID)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(c.BaseURL)
+	}
+	if baseURL == "" {
+		return fmt.Errorf("alertmanager external url is empty")
+	}
+	if silenceID == "" {
+		return fmt.Errorf("alertmanager silence id is empty")
+	}
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, strings.TrimRight(baseURL, "/")+"/api/v2/silence/"+silenceID, nil)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.BearerToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(c.BearerToken))
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("alertmanager expire silence failed: http %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func buildMatchers(ref *incident.ExternalAlert) []Matcher {
 	if ref == nil || len(ref.Labels) == 0 {
 		return nil

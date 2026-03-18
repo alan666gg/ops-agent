@@ -308,6 +308,7 @@ func main() {
 	mux.HandleFunc("/incidents/get", s.handleGetIncident)
 	mux.HandleFunc("/incidents/timeline", s.handleIncidentTimeline)
 	mux.HandleFunc("/incidents/ack", s.handleAckIncident)
+	mux.HandleFunc("/incidents/unsilence", s.handleUnsilenceIncident)
 	mux.HandleFunc("/incidents/assign", s.handleAssignIncident)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
@@ -1175,18 +1176,57 @@ func (s *server) handleAckIncident(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Actor) == "" {
 		req.Actor = "ops-api"
 	}
-	item, err := s.incidentStore.Ack(req.ID, req.Actor, req.Note, time.Now().UTC())
+	now := time.Now().UTC()
+	item, err := s.incidentStore.Ack(req.ID, req.Actor, req.Note, now)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
-	_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: "incident_ack", Project: item.Project, Env: item.Env, Target: item.ID, Status: "ok", Message: defaultString(req.Note, "incident acknowledged")})
-	if silenceID, silenceErr := s.syncAlertmanagerSilence(r.Context(), item, req.Actor, req.Note); silenceErr != nil {
-		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: "alertmanager_silence", Project: item.Project, Env: item.Env, Target: item.ID, Status: "failed", Message: silenceErr.Error()})
-		item.Note = appendResponseNote(item.Note, "alertmanager_silence_failed="+silenceErr.Error())
-	} else if silenceID != "" {
-		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: req.Actor, Action: "alertmanager_silence", Project: item.Project, Env: item.Env, Target: item.ID, Status: "ok", Message: "silence_id=" + silenceID})
-		item.Note = appendResponseNote(item.Note, "alertmanager_silence="+silenceID)
+	_ = s.auditStore.Append(audit.Event{Time: now, Actor: req.Actor, Action: "incident_ack", Project: item.Project, Env: item.Env, Target: item.ID, Status: "ok", Message: defaultString(req.Note, "incident acknowledged")})
+	if updated, silenceStatus, silenceErr := s.syncAlertmanagerSilence(r.Context(), item, req.Actor, req.Note, now); silenceErr != nil {
+		_ = s.auditStore.Append(audit.Event{Time: now, Actor: req.Actor, Action: "alertmanager_silence", Project: item.Project, Env: item.Env, Target: item.ID, Status: "failed", Message: silenceErr.Error()})
+	} else {
+		item = updated
+		if item.Silence != nil && strings.TrimSpace(item.Silence.ID) != "" && strings.TrimSpace(silenceStatus) != "" {
+			_ = s.auditStore.Append(audit.Event{Time: now, Actor: req.Actor, Action: "alertmanager_silence", Project: item.Project, Env: item.Env, Target: item.ID, Status: silenceStatus, Message: "silence_id=" + item.Silence.ID})
+		}
+	}
+	_ = json.NewEncoder(w).Encode(item)
+}
+
+func (s *server) handleUnsilenceIncident(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if s.auditStore == nil {
+		http.Error(w, `{"error":"audit store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req incidentActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Actor) == "" {
+		req.Actor = "ops-api"
+	}
+	now := time.Now().UTC()
+	item, err := s.expireAlertmanagerSilence(r.Context(), req.ID, req.Actor, req.Note, now)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if item.Silence != nil && strings.TrimSpace(item.Silence.ID) != "" {
+		_ = s.auditStore.Append(audit.Event{Time: now, Actor: req.Actor, Action: "alertmanager_unsilence", Project: item.Project, Env: item.Env, Target: item.ID, Status: "ok", Message: "silence_id=" + item.Silence.ID})
 	}
 	_ = json.NewEncoder(w).Encode(item)
 }
@@ -1376,12 +1416,15 @@ func shouldSuppressAcknowledged(rec incident.Record, report incident.Report) boo
 	return strings.TrimSpace(rec.Fingerprint) == strings.TrimSpace(report.Fingerprint)
 }
 
-func (s *server) syncAlertmanagerSilence(ctx context.Context, item incident.Record, actor, note string) (string, error) {
+func (s *server) syncAlertmanagerSilence(ctx context.Context, item incident.Record, actor, note string, now time.Time) (incident.Record, string, error) {
 	if !s.syncAlertAck {
-		return "", nil
+		return item, "", nil
 	}
 	if item.External == nil || !strings.EqualFold(strings.TrimSpace(item.External.Provider), "alertmanager") {
-		return "", nil
+		return item, "", nil
+	}
+	if incident.SilenceActive(item.Silence, now) {
+		return item, "exists", nil
 	}
 	comment := strings.TrimSpace(note)
 	if comment == "" {
@@ -1392,20 +1435,51 @@ func (s *server) syncAlertmanagerSilence(ctx context.Context, item incident.Reco
 		BearerToken: s.alertAPIToken,
 		HTTPClient:  newAlertmanagerHTTPClient(10 * time.Second),
 	}
-	return client.CreateSilence(ctx, item.External, s.alertSilence, actor, comment)
+	silenceID, err := client.CreateSilence(ctx, item.External, s.alertSilence, actor, comment)
+	if err != nil {
+		return item, "", err
+	}
+	updated, err := s.incidentStore.SetSilence(item.ID, incident.ExternalSilence{
+		ID:        silenceID,
+		Status:    "active",
+		CreatedBy: strings.TrimSpace(actor),
+		Comment:   comment,
+		StartsAt:  now,
+		EndsAt:    now.Add(s.alertSilence),
+		UpdatedAt: now,
+	}, now)
+	if err != nil {
+		return item, "", err
+	}
+	return updated, "ok", nil
 }
 
-func appendResponseNote(existing, extra string) string {
-	existing = strings.TrimSpace(existing)
-	extra = strings.TrimSpace(extra)
-	switch {
-	case existing == "":
-		return extra
-	case extra == "":
-		return existing
-	default:
-		return existing + " | " + extra
+func (s *server) expireAlertmanagerSilence(ctx context.Context, id, actor, note string, now time.Time) (incident.Record, error) {
+	item, ok, err := s.incidentStore.Get(id)
+	if err != nil {
+		return incident.Record{}, err
 	}
+	if !ok {
+		return incident.Record{}, fmt.Errorf("incident not found: %s", id)
+	}
+	if item.External == nil || !strings.EqualFold(strings.TrimSpace(item.External.Provider), "alertmanager") {
+		return incident.Record{}, fmt.Errorf("incident is not backed by alertmanager: %s", id)
+	}
+	if item.Silence == nil || strings.TrimSpace(item.Silence.ID) == "" {
+		return incident.Record{}, fmt.Errorf("incident has no alertmanager silence: %s", id)
+	}
+	if !incident.SilenceActive(item.Silence, now) {
+		return incident.Record{}, fmt.Errorf("incident silence is not active: %s", id)
+	}
+	client := alerting.AlertmanagerClient{
+		BaseURL:     strings.TrimSpace(item.External.ExternalURL),
+		BearerToken: s.alertAPIToken,
+		HTTPClient:  newAlertmanagerHTTPClient(10 * time.Second),
+	}
+	if err := client.ExpireSilence(ctx, item.External.ExternalURL, item.Silence.ID); err != nil {
+		return incident.Record{}, err
+	}
+	return s.incidentStore.ExpireSilence(item.ID, actor, note, now)
 }
 
 func prometheusClientForEnv(env config.Environment) (promapi.Client, time.Duration, error) {

@@ -23,6 +23,7 @@ Current behavior:
 - Calls `ops-api` for active incident lifecycle too, including acknowledge and owner assignment
 - Shows Alertmanager-ingested incidents in the same `/active`, `/incident`, `/timeline`, `/ack`, and `/assign` flows
 - Can trigger an upstream Alertmanager silence when `/ack` is used on an Alertmanager-backed incident and the API enables `--alertmanager-sync-ack`
+- Can expire an active Alertmanager silence with `/unsilence` or the inline `Unsilence` button
 - Renders inline `Approve` / `Reject` buttons for pending approval items
 - Uses OpenAI Responses API tool calling for non-`/` natural-language messages when `OPENAI_API_KEY` is configured
 - Keeps slash commands as a fallback and resets LLM context whenever a slash command or approval button is used
@@ -42,6 +43,7 @@ Supported commands:
 - `/incident <incident_id>`
 - `/timeline <incident_id> [minutes]`
 - `/ack <incident_id> [note]`
+- `/unsilence <incident_id> [note]`
 - `/assign <incident_id> <owner> [note]`
 - `/pending`
 - `/requests [status]`
@@ -58,6 +60,7 @@ Natural-language examples:
 - `最近 2 小时有什么异常`
 - `列出 prod 的活跃事故`
 - `先 ack 掉 prod 那个 incident`
+- `把 prod 那个 incident 的 silence 取消掉`
 - `把 prod 那个事故分给 alice`
 - `申请重启 app-1 上的 cicdtest-app`
 - `把刚才那个审批通过`
@@ -68,8 +71,9 @@ Interaction notes:
 
 - `/pending` now renders `View / Approve / Reject` buttons for each visible request
 - `/active` now renders `View / Timeline / Ack / Claim` buttons for each visible incident
+- If one incident currently carries an active Alertmanager silence, Telegram also renders an `Unsilence` button for it
 - High-risk LLM-created operations render `Confirm / Cancel` buttons backed by the same pending confirmation store as the text replies
 - `/show <request_id>` returns one request's full detail and, if it is still pending, renders approve/reject buttons for that exact request
-- `/incident <incident_id>` returns one incident's detail and, if it is still open, renders timeline/ack/claim buttons for that exact incident
+- `/incident <incident_id>` returns one incident's detail and shows structured `external` / `silence` state; if the incident is still open or still silenced, it renders the relevant buttons for that exact incident
 - `/timeline <incident_id> [minutes]` summarizes recent audit events and likely correlated changes around one incident
 - `/promql <env> ...` returns either an instant Prometheus value or a short range summary for the selected environment

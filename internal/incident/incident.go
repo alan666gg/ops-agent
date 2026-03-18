@@ -42,6 +42,18 @@ type ExternalAlert struct {
 	EndsAt       time.Time         `json:"ends_at,omitempty"`
 }
 
+type ExternalSilence struct {
+	ID        string    `json:"id"`
+	Status    string    `json:"status,omitempty"`
+	CreatedBy string    `json:"created_by,omitempty"`
+	Comment   string    `json:"comment,omitempty"`
+	StartsAt  time.Time `json:"starts_at,omitempty"`
+	EndsAt    time.Time `json:"ends_at,omitempty"`
+	ExpiredAt time.Time `json:"expired_at,omitempty"`
+	ExpiredBy string    `json:"expired_by,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
 type Report struct {
 	Source           string            `json:"source"`
 	Key              string            `json:"key,omitempty"`
@@ -62,6 +74,27 @@ type Report struct {
 	FailedChecks     []checks.Result   `json:"failed_checks,omitempty"`
 	WarningChecks    []checks.Result   `json:"warning_checks,omitempty"`
 	SuppressedChecks []SuppressedCheck `json:"suppressed_checks,omitempty"`
+}
+
+func SilenceStatus(silence *ExternalSilence, now time.Time) string {
+	if silence == nil {
+		return ""
+	}
+	status := strings.ToLower(strings.TrimSpace(silence.Status))
+	if !silence.ExpiredAt.IsZero() {
+		return "expired"
+	}
+	if !silence.EndsAt.IsZero() && !now.IsZero() && !now.Before(silence.EndsAt) {
+		return "expired"
+	}
+	if status != "" {
+		return status
+	}
+	return "active"
+}
+
+func SilenceActive(silence *ExternalSilence, now time.Time) bool {
+	return SilenceStatus(silence, now) == "active"
 }
 
 func BuildReport(source, envName string, env config.Environment, results []checks.Result, policyCfg policy.Config, recentAutoActions int) Report {

@@ -334,15 +334,100 @@ func TestHandleAckIncidentSyncsAlertmanagerSilence(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Acknowledged || !strings.Contains(got.Note, "alertmanager_silence=sil-123") {
+	if !got.Acknowledged || got.Silence == nil || got.Silence.ID != "sil-123" || !incident.SilenceActive(got.Silence, now.Add(time.Minute)) {
 		t.Fatalf("unexpected ack response: %+v", got)
 	}
 	events, err := audit.RecentEvents(auditFile, audit.Query{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) < 2 || events[0].Action != "alertmanager_silence" || events[0].Status != "ok" {
+	found := false
+	for _, evt := range events {
+		if evt.Action == "alertmanager_silence" && evt.Status == "ok" {
+			found = true
+			break
+		}
+	}
+	if !found {
 		t.Fatalf("unexpected audit trail: %+v", events)
+	}
+}
+
+func TestHandleUnsilenceIncidentExpiresAlertmanagerSilence(t *testing.T) {
+	now := time.Now().UTC()
+	store := &incident.MemoryStore{}
+	rec, err := store.SyncReport(incident.Report{
+		Source:      "alertmanager",
+		Key:         "fp-1",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "external alert",
+		Fingerprint: "fp-1",
+		FailCount:   1,
+		External: &incident.ExternalAlert{
+			Provider:    "alertmanager",
+			ExternalURL: "http://alertmanager.test",
+			Labels:      map[string]string{"alertname": "HighErrorRate"},
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err = store.SetSilence(rec.ID, incident.ExternalSilence{
+		ID:        "sil-123",
+		Status:    "active",
+		CreatedBy: "tg:@ops",
+		StartsAt:  now,
+		EndsAt:    now.Add(2 * time.Hour),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prevFactory := newAlertmanagerHTTPClient
+	newAlertmanagerHTTPClient = func(timeout time.Duration) *http.Client {
+		return &http.Client{Transport: promRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method != http.MethodDelete {
+				t.Fatalf("unexpected method: %s", r.Method)
+			}
+			if r.URL.Path != "/api/v2/silence/sil-123" {
+				t.Fatalf("unexpected unsilence path: %s", r.URL.Path)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer api-token" {
+				t.Fatalf("unexpected auth header: %q", got)
+			}
+			return promJSONResponse(http.StatusOK, `{}`), nil
+		})}
+	}
+	defer func() { newAlertmanagerHTTPClient = prevFactory }()
+
+	auditFile := filepath.Join(t.TempDir(), "audit.jsonl")
+	s := &server{
+		auditStore:    audit.JSONLStore{Path: auditFile},
+		incidentStore: store,
+		alertAPIToken: "api-token",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/incidents/unsilence", bytes.NewBufferString(`{"id":"`+rec.ID+`","actor":"tg:@ops","note":"resume notifications"}`))
+	rr := httptest.NewRecorder()
+
+	s.handleUnsilenceIncident(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var got incident.Record
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Silence == nil || incident.SilenceActive(got.Silence, now.Add(time.Minute)) || got.Silence.ExpiredBy != "tg:@ops" {
+		t.Fatalf("unexpected unsilence response: %+v", got)
+	}
+	events, err := audit.RecentEvents(auditFile, audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || events[0].Action != "alertmanager_unsilence" || events[0].Status != "ok" {
+		t.Fatalf("unexpected unsilence audit trail: %+v", events)
 	}
 }
 

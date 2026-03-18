@@ -45,6 +45,9 @@ max_input_chars: 100
 	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "approve", RequestID: "r1"}); err == nil {
 		t.Fatal("expected viewer approve to be denied")
 	}
+	if err := auth.AuthorizeCommand("tg:@operator", Command{Name: "unsilence", IncidentID: "alertmanager|payments|prod|fp-1"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.AuthorizeCommand("tg:@operator", Command{Name: "request", Action: "restart_container", Env: "prod"}); err != nil {
 		t.Fatal(err)
 	}
@@ -60,10 +63,16 @@ max_input_chars: 100
 	if err := auth.AuthorizeCallback("tg:@viewer", "incident_timeline:ops-scheduler|payments|prod"); err != nil {
 		t.Fatal(err)
 	}
+	if err := auth.AuthorizeCallback("tg:@operator", "incident_unsilence:alertmanager|payments|prod|fp-1"); err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.AuthorizeTool("tg:@viewer", "get_incident_timeline", map[string]any{"incident_id": "ops-scheduler|payments|prod"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := auth.AuthorizeTool("tg:@viewer", "query_prometheus", map[string]any{"env": "prod", "query": "up"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AuthorizeTool("tg:@operator", "unsilence_incident", map[string]any{"incident_id": "alertmanager|payments|prod|fp-1"}); err != nil {
 		t.Fatal(err)
 	}
 }

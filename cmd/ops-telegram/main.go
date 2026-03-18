@@ -335,7 +335,20 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "ack failed: " + err.Error(), nil
 		}
-		return fmt.Sprintf("acknowledged %s\nowner=%s\nsummary=%s", updated.ID, defaultString(updated.Owner, "(unassigned)"), strings.TrimSpace(updated.Summary)), chatops.IncidentMarkup(updated)
+		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated)
+	case "unsilence":
+		item, err := api.GetIncident(ctx, cmd.IncidentID)
+		if err != nil {
+			return "unsilence failed: " + err.Error(), nil
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "unsilence denied: " + err.Error(), nil
+		}
+		updated, err := api.UnsilenceIncident(ctx, cmd.IncidentID, actor, cmd.Reason)
+		if err != nil {
+			return "unsilence failed: " + err.Error(), nil
+		}
+		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated)
 	case "assign":
 		item, err := api.GetIncident(ctx, cmd.IncidentID)
 		if err != nil {
@@ -348,7 +361,7 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "assign failed: " + err.Error(), nil
 		}
-		return fmt.Sprintf("assigned %s\nowner=%s\nstatus=%s", updated.ID, defaultString(updated.Owner, "(unassigned)"), updated.Status), chatops.IncidentMarkup(updated)
+		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated)
 	case "request":
 		if _, err := authorizeCommandEnv(agent, actor, cmd.Env); err != nil {
 			return "request denied: " + err.Error(), nil
@@ -420,7 +433,21 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "", nil, err
 		}
-		return "acknowledged " + id, chatops.IncidentMarkup(updated), nil
+		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated), nil
+	case strings.HasPrefix(data, "incident_unsilence:"):
+		id := strings.TrimPrefix(data, "incident_unsilence:")
+		item, err := api.GetIncident(ctx, id)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
+			return "", nil, err
+		}
+		updated, err := api.UnsilenceIncident(ctx, id, actor, "expired from telegram button")
+		if err != nil {
+			return "", nil, err
+		}
+		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated), nil
 	case strings.HasPrefix(data, "incident_assign:"):
 		id := strings.TrimPrefix(data, "incident_assign:")
 		item, err := api.GetIncident(ctx, id)
@@ -434,7 +461,7 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "", nil, err
 		}
-		return "claimed " + id, chatops.IncidentMarkup(updated), nil
+		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated), nil
 	case strings.HasPrefix(data, "approve:"):
 		id := strings.TrimPrefix(data, "approve:")
 		item, err := api.GetAction(ctx, id)

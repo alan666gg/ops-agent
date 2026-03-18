@@ -243,6 +243,7 @@ func IncidentListMarkup(items []incident.Record) any {
 		return nil
 	}
 	rows := make([][]inlineButton, 0, len(items)*2)
+	now := time.Now().UTC()
 	for i, item := range items {
 		if i >= 5 {
 			break
@@ -255,6 +256,11 @@ func IncidentListMarkup(items []incident.Record) any {
 			{Text: "Ack", CallbackData: "incident_ack:" + item.ID},
 			{Text: "Claim", CallbackData: "incident_assign:" + item.ID},
 		})
+		if incident.SilenceActive(item.Silence, now) {
+			rows = append(rows, []inlineButton{
+				{Text: "Unsilence", CallbackData: "incident_unsilence:" + item.ID},
+			})
+		}
 	}
 	if len(rows) == 0 {
 		return nil
@@ -263,18 +269,27 @@ func IncidentListMarkup(items []incident.Record) any {
 }
 
 func IncidentMarkup(item incident.Record) any {
-	if !item.Open {
+	now := time.Now().UTC()
+	if !item.Open && !incident.SilenceActive(item.Silence, now) {
 		return nil
 	}
-	return replyMarkup{InlineKeyboard: [][]inlineButton{
+	rows := [][]inlineButton{
 		{
 			{Text: "Timeline", CallbackData: "incident_timeline:" + item.ID},
 		},
-		{
+	}
+	if item.Open {
+		rows = append(rows, []inlineButton{
 			{Text: "Ack", CallbackData: "incident_ack:" + item.ID},
 			{Text: "Claim", CallbackData: "incident_assign:" + item.ID},
-		},
-	}}
+		})
+	}
+	if incident.SilenceActive(item.Silence, now) {
+		rows = append(rows, []inlineButton{
+			{Text: "Unsilence", CallbackData: "incident_unsilence:" + item.ID},
+		})
+	}
+	return replyMarkup{InlineKeyboard: rows}
 }
 
 func ConfirmationMarkup() any {

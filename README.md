@@ -142,6 +142,7 @@ receivers:
 
 If an incident originated from Alertmanager and the API is started with `--alertmanager-sync-ack`, acknowledging that incident through `/incidents/ack`, Telegram `/ack`, or the LLM tool flow will also create a matching Alertmanager silence for the original alert labels.
 Use `OPS_ALERTMANAGER_API_TOKEN` when your Alertmanager API requires authentication, and tune the silence window with `--alertmanager-silence-duration`.
+Created silences are now stored as structured incident state and shown back in `/incidents/get`, Telegram incident detail, and timelines. You can later expire one through `/incidents/unsilence` or Telegram `/unsilence`.
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
 
@@ -168,6 +169,7 @@ Telegram commands:
 /incident <incident_id>
 /timeline <incident_id> 90
 /ack <incident_id> taking ownership
+/unsilence <incident_id> resume notifications
 /assign <incident_id> alice on it
 /pending
 /requests pending
@@ -186,6 +188,7 @@ prod CPU 最近是不是升高了
 最近 2 小时有什么异常
 列出 prod 的活跃事故
 把 prod 那个 incident 先 ack 掉
+把这个 incident 的 silence 取消掉
 把 prod 那个事故分给 alice
 申请重启 app-1 上的 cicdtest-app
 把刚才那个审批通过
@@ -242,6 +245,10 @@ curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60&project=core" -H "Au
 curl -s "http://127.0.0.1:8090/incidents/active?project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/get?id=ops-scheduler|core|prod" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/timeline?id=ops-scheduler|core|prod&minutes=90" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s -X POST http://127.0.0.1:8090/incidents/unsilence \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -d '{"id":"alertmanager|core|prod|fp-1","actor":"ops-admin","note":"resume notifications"}'
 curl -s -X POST http://127.0.0.1:8090/incidents/ack \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $OPS_API_TOKEN" \

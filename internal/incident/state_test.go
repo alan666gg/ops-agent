@@ -122,11 +122,66 @@ func TestSQLiteStorePersistsExternalAlertContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rec, err = store.SetSilence(rec.ID, ExternalSilence{
+		ID:        "sil-123",
+		Status:    "active",
+		CreatedBy: "tg:@ops",
+		StartsAt:  now,
+		EndsAt:    now.Add(2 * time.Hour),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, ok, err := store.Get(rec.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok || got.External == nil || got.External.Provider != "alertmanager" || got.External.Labels["alertname"] != "HighErrorRate" {
 		t.Fatalf("unexpected external alert context: %+v", got)
+	}
+	if got.Silence == nil || got.Silence.ID != "sil-123" || !SilenceActive(got.Silence, now.Add(time.Minute)) {
+		t.Fatalf("unexpected silence context: %+v", got)
+	}
+}
+
+func TestMemoryStoreSetAndExpireSilence(t *testing.T) {
+	store := &MemoryStore{}
+	now := time.Now().UTC()
+	rec, err := store.SyncReport(Report{
+		Source:      "alertmanager",
+		Key:         "fp-1",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "external alert",
+		Fingerprint: "fp-1",
+		FailCount:   1,
+		External: &ExternalAlert{
+			Provider:    "alertmanager",
+			ExternalURL: "http://alertmanager.test",
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err = store.SetSilence(rec.ID, ExternalSilence{
+		ID:        "sil-123",
+		Status:    "active",
+		CreatedBy: "tg:@ops",
+		StartsAt:  now,
+		EndsAt:    now.Add(2 * time.Hour),
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Silence == nil || rec.Silence.ID != "sil-123" || !SilenceActive(rec.Silence, now.Add(time.Minute)) {
+		t.Fatalf("unexpected silence after set: %+v", rec)
+	}
+	rec, err = store.ExpireSilence(rec.ID, "tg:@ops", "resume notifications", now.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Silence == nil || SilenceActive(rec.Silence, now.Add(11*time.Minute)) || rec.Silence.ExpiredBy != "tg:@ops" {
+		t.Fatalf("unexpected silence after expire: %+v", rec)
 	}
 }

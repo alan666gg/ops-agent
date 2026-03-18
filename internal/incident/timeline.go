@@ -123,7 +123,7 @@ func classifyEvent(evt audit.Event) string {
 	switch actionName {
 	case "health_cycle", "health_run", "slo_eval", "alertmanager_receive":
 		return "signal"
-	case "incident_ack", "incident_assign", "incident_sync", "alertmanager_silence":
+	case "incident_ack", "incident_assign", "incident_sync", "alertmanager_silence", "alertmanager_unsilence":
 		return "incident"
 	case "notify":
 		return ""

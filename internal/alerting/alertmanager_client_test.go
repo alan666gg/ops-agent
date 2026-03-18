@@ -49,6 +49,32 @@ func TestAlertmanagerClientCreateSilence(t *testing.T) {
 	}
 }
 
+func TestAlertmanagerClientExpireSilence(t *testing.T) {
+	var gotAuth string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotAuth = r.Header.Get("Authorization")
+		if r.Method != http.MethodDelete {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v2/silence/sil-123" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		return jsonResponse(http.StatusOK, `{}`), nil
+	})}
+
+	api := AlertmanagerClient{
+		BaseURL:     "http://alertmanager.test",
+		BearerToken: "secret",
+		HTTPClient:  client,
+	}
+	if err := api.ExpireSilence(context.Background(), "", "sil-123"); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer secret" {
+		t.Fatalf("unexpected auth header %q", gotAuth)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {

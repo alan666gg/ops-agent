@@ -55,6 +55,14 @@ func TestParseCommandHealthAndRequest(t *testing.T) {
 		t.Fatalf("unexpected ack command: %+v", cmd)
 	}
 
+	cmd, err = ParseCommand("/unsilence ops-scheduler|core|prod resume notifications")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "unsilence" || cmd.IncidentID != "ops-scheduler|core|prod" {
+		t.Fatalf("unexpected unsilence command: %+v", cmd)
+	}
+
 	cmd, err = ParseCommand("/assign ops-scheduler|core|prod alice on it")
 	if err != nil {
 		t.Fatal(err)
@@ -185,8 +193,19 @@ func TestFormatIncidentDetail(t *testing.T) {
 		AcknowledgedBy: "tg:@ops",
 		Summary:        "api unhealthy",
 		Highlights:     []string{"service_api [HTTP_DOWN] connection refused"},
+		Silence: &incident.ExternalSilence{
+			ID:       "sil-123",
+			Status:   "active",
+			EndsAt:   stringsToTime(t, "2099-03-18T12:00:00Z"),
+			StartsAt: stringsToTime(t, "2026-03-18T10:00:00Z"),
+		},
+		External: &incident.ExternalAlert{
+			Provider:  "alertmanager",
+			AlertName: "HighErrorRate",
+			Labels:    map[string]string{"instance": "api-1:9090"},
+		},
 	})
-	for _, want := range []string{"incident ops-scheduler|core|prod", "owner=alice", "acknowledged_by=tg:@ops"} {
+	for _, want := range []string{"incident ops-scheduler|core|prod", "owner=alice", "acknowledged_by=tg:@ops", "external=alertmanager", "silence=active id=sil-123"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}

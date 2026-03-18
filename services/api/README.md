@@ -31,6 +31,7 @@ Endpoints:
 - `GET /incidents/get?id=<incident_id>` (Bearer token)
 - `GET /incidents/timeline?id=<incident_id>&minutes=90` (Bearer token)
 - `POST /incidents/ack` (Bearer token)
+- `POST /incidents/unsilence` (Bearer token)
 - `POST /incidents/assign` (Bearer token)
 
 OpenAPI draft: `docs/openapi.yaml`
@@ -38,6 +39,7 @@ OpenAPI draft: `docs/openapi.yaml`
 If `target_host` is provided, the API resolves that host from the selected environment and runs the runbook over SSH.
 If the selected environment declares `prometheus.base_url`, `GET /prometheus/query` proxies read-only PromQL queries through that environment's Prometheus.
 `POST /alerts/alertmanager` accepts Alertmanager webhook payloads and turns each external alert into an incident record, so external Prometheus alerts share the same acknowledge/assign timeline as native bot incidents.
+Incident detail responses now include structured `external` and `silence` state for Alertmanager-backed incidents.
 
 `GET /health/run` includes local host basics, configured host SSH reachability, service health URLs, and dependency checks for the selected environment.
 If a service declares `host`, the response can suppress downstream service symptoms when that host is already the active root cause.
@@ -49,5 +51,6 @@ Acknowledged incidents suppress duplicate notify repeats until the fingerprint c
 `GET /prometheus/query` supports instant queries by default, or range queries when `minutes` is set. `step` is optional and defaults to an auto-selected resolution.
 For Alertmanager, use a dedicated `OPS_ALERT_TOKEN` so webhook senders do not need the broader operator API token.
 If `--alertmanager-sync-ack` is enabled, acknowledging an Alertmanager-backed incident also creates an Alertmanager silence for the alert's original labels. Use `OPS_ALERTMANAGER_API_TOKEN` when the Alertmanager API itself requires auth.
+`POST /incidents/unsilence` expires one stored Alertmanager silence and updates the same incident record so Telegram and timeline views immediately show `silence=expired`.
 `--notify-config` replaces direct notifier flags with a routed notification policy that supports named receivers, silences, and maintenance windows.
 `--notify-trigger-after` and `--notify-recovery-after` help suppress flapping by requiring consecutive unhealthy or healthy samples before opening or closing an incident.

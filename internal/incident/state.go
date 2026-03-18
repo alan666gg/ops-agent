@@ -8,30 +8,31 @@ import (
 )
 
 type Record struct {
-	ID              string         `json:"id"`
-	Source          string         `json:"source"`
-	Key             string         `json:"key,omitempty"`
-	Project         string         `json:"project,omitempty"`
-	Env             string         `json:"env"`
-	Status          string         `json:"status"`
-	Summary         string         `json:"summary"`
-	Fingerprint     string         `json:"fingerprint"`
-	Highlights      []string       `json:"highlights,omitempty"`
-	Open            bool           `json:"open"`
-	Acknowledged    bool           `json:"acknowledged"`
-	AcknowledgedBy  string         `json:"acknowledged_by,omitempty"`
-	AcknowledgedAt  time.Time      `json:"acknowledged_at,omitempty"`
-	Owner           string         `json:"owner,omitempty"`
-	Note            string         `json:"note,omitempty"`
-	FirstSeenAt     time.Time      `json:"first_seen_at,omitempty"`
-	LastSeenAt      time.Time      `json:"last_seen_at,omitempty"`
-	LastChangedAt   time.Time      `json:"last_changed_at,omitempty"`
-	ClosedAt        time.Time      `json:"closed_at,omitempty"`
-	UpdatedAt       time.Time      `json:"updated_at,omitempty"`
-	FailCount       int            `json:"fail_count"`
-	WarnCount       int            `json:"warn_count"`
-	SuppressedCount int            `json:"suppressed_count"`
-	External        *ExternalAlert `json:"external,omitempty"`
+	ID              string           `json:"id"`
+	Source          string           `json:"source"`
+	Key             string           `json:"key,omitempty"`
+	Project         string           `json:"project,omitempty"`
+	Env             string           `json:"env"`
+	Status          string           `json:"status"`
+	Summary         string           `json:"summary"`
+	Fingerprint     string           `json:"fingerprint"`
+	Highlights      []string         `json:"highlights,omitempty"`
+	Open            bool             `json:"open"`
+	Acknowledged    bool             `json:"acknowledged"`
+	AcknowledgedBy  string           `json:"acknowledged_by,omitempty"`
+	AcknowledgedAt  time.Time        `json:"acknowledged_at,omitempty"`
+	Owner           string           `json:"owner,omitempty"`
+	Note            string           `json:"note,omitempty"`
+	FirstSeenAt     time.Time        `json:"first_seen_at,omitempty"`
+	LastSeenAt      time.Time        `json:"last_seen_at,omitempty"`
+	LastChangedAt   time.Time        `json:"last_changed_at,omitempty"`
+	ClosedAt        time.Time        `json:"closed_at,omitempty"`
+	UpdatedAt       time.Time        `json:"updated_at,omitempty"`
+	FailCount       int              `json:"fail_count"`
+	WarnCount       int              `json:"warn_count"`
+	SuppressedCount int              `json:"suppressed_count"`
+	External        *ExternalAlert   `json:"external,omitempty"`
+	Silence         *ExternalSilence `json:"silence,omitempty"`
 }
 
 type Filter struct {
@@ -48,6 +49,8 @@ type Store interface {
 	List(filter Filter) ([]Record, error)
 	Ack(id, actor, note string, now time.Time) (Record, error)
 	Assign(id, owner, actor, note string, now time.Time) (Record, error)
+	SetSilence(id string, silence ExternalSilence, now time.Time) (Record, error)
+	ExpireSilence(id, actor, note string, now time.Time) (Record, error)
 }
 
 type MemoryStore struct {
@@ -132,6 +135,50 @@ func (m *MemoryStore) Assign(id, owner, actor, note string, now time.Time) (Reco
 	return rec, nil
 }
 
+func (m *MemoryStore) SetSilence(id string, silence ExternalSilence, now time.Time) (Record, error) {
+	rec, ok, err := m.Get(id)
+	if err != nil {
+		return Record{}, err
+	}
+	if !ok {
+		return Record{}, fmt.Errorf("incident not found: %s", id)
+	}
+	silence.Status = strings.TrimSpace(silence.Status)
+	if silence.Status == "" {
+		silence.Status = "active"
+	}
+	silence.UpdatedAt = now.UTC()
+	rec.Silence = cloneExternalSilence(&silence)
+	rec.UpdatedAt = now.UTC()
+	m.items[rec.ID] = rec
+	return rec, nil
+}
+
+func (m *MemoryStore) ExpireSilence(id, actor, note string, now time.Time) (Record, error) {
+	rec, ok, err := m.Get(id)
+	if err != nil {
+		return Record{}, err
+	}
+	if !ok {
+		return Record{}, fmt.Errorf("incident not found: %s", id)
+	}
+	if rec.Silence == nil {
+		return Record{}, fmt.Errorf("incident has no silence: %s", id)
+	}
+	silence := cloneExternalSilence(rec.Silence)
+	silence.Status = "expired"
+	silence.ExpiredAt = now.UTC()
+	silence.ExpiredBy = strings.TrimSpace(actor)
+	silence.UpdatedAt = now.UTC()
+	rec.Silence = silence
+	if note = strings.TrimSpace(note); note != "" {
+		rec.Note = note
+	}
+	rec.UpdatedAt = now.UTC()
+	m.items[rec.ID] = rec
+	return rec, nil
+}
+
 func recordID(report Report) string {
 	parts := []string{
 		strings.TrimSpace(report.Source),
@@ -167,6 +214,7 @@ func syncRecord(prev Record, ok bool, report Report, now time.Time) Record {
 	next.Fingerprint = strings.TrimSpace(report.Fingerprint)
 	next.Highlights = append([]string(nil), report.Highlights...)
 	next.External = cloneExternalAlert(report.External)
+	next.Silence = cloneExternalSilence(prev.Silence)
 	next.FailCount = report.FailCount
 	next.WarnCount = report.WarnCount
 	next.SuppressedCount = report.SuppressedCount
@@ -227,6 +275,14 @@ func cloneExternalAlert(v *ExternalAlert) *ExternalAlert {
 			out.Annotations[key] = value
 		}
 	}
+	return &out
+}
+
+func cloneExternalSilence(v *ExternalSilence) *ExternalSilence {
+	if v == nil {
+		return nil
+	}
+	out := *v
 	return &out
 }
 

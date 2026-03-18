@@ -153,6 +153,15 @@ func ParseCommand(text string) (Command, error) {
 			out.Reason = strings.Join(fields[2:], " ")
 		}
 		return out, nil
+	case "unsilence":
+		if len(fields) < 2 {
+			return Command{}, fmt.Errorf("usage: /unsilence <incident_id> [note]")
+		}
+		out.IncidentID = fields[1]
+		if len(fields) > 2 {
+			out.Reason = strings.Join(fields[2:], " ")
+		}
+		return out, nil
 	case "assign":
 		if len(fields) < 3 {
 			return Command{}, fmt.Errorf("usage: /assign <incident_id> <owner> [note]")
@@ -197,6 +206,7 @@ func HelpText() string {
 		"/requests [status]",
 		"/show <request_id>",
 		"/ack <incident_id> [note]",
+		"/unsilence <incident_id> [note]",
 		"/assign <incident_id> <owner> [note]",
 		"/request <env> <action> [--target-host=name] [args...]",
 		"/approve <request_id>",
@@ -371,18 +381,33 @@ func FormatActiveIncidents(resp IncidentListResponse) string {
 }
 
 func FormatIncidentDetail(item incident.Record) string {
+	now := time.Now().UTC()
+	state := "open"
+	if !item.Open {
+		state = "resolved"
+	}
 	lines := []string{
 		fmt.Sprintf("incident %s", item.ID),
 		fmt.Sprintf("- status=%s", item.Status),
+		fmt.Sprintf("- state=%s", state),
 		fmt.Sprintf("- project=%s", defaultString(item.Project, "default")),
 		fmt.Sprintf("- env=%s", defaultString(item.Env, "test")),
 		fmt.Sprintf("- source=%s", defaultString(item.Source, "unknown")),
+	}
+	if !item.ClosedAt.IsZero() {
+		lines = append(lines, "- resolved_at="+item.ClosedAt.UTC().Format(time.RFC3339))
 	}
 	if strings.TrimSpace(item.Owner) != "" {
 		lines = append(lines, "- owner="+item.Owner)
 	}
 	if item.Acknowledged {
 		lines = append(lines, "- acknowledged_by="+item.AcknowledgedBy)
+	}
+	if externalLine := formatExternalAlert(item.External); externalLine != "" {
+		lines = append(lines, "- "+externalLine)
+	}
+	if silenceLine := formatIncidentSilence(item.Silence, now); silenceLine != "" {
+		lines = append(lines, "- "+silenceLine)
 	}
 	if strings.TrimSpace(item.Summary) != "" {
 		lines = append(lines, "- summary="+trimForChat(item.Summary, 200))
@@ -400,11 +425,23 @@ func FormatIncidentDetail(item incident.Record) string {
 }
 
 func FormatIncidentTimeline(timeline incident.Timeline) string {
+	now := time.Now().UTC()
+	state := "open"
+	if !timeline.Incident.Open {
+		state = "resolved"
+	}
 	lines := []string{
 		fmt.Sprintf("timeline %s last %d minutes", timeline.Incident.ID, timeline.WindowMinutes),
 		fmt.Sprintf("- status=%s", timeline.Incident.Status),
+		fmt.Sprintf("- state=%s", state),
 		fmt.Sprintf("- project=%s", defaultString(timeline.Incident.Project, "default")),
 		fmt.Sprintf("- env=%s", defaultString(timeline.Incident.Env, "test")),
+	}
+	if !timeline.Incident.ClosedAt.IsZero() {
+		lines = append(lines, "- resolved_at="+timeline.Incident.ClosedAt.UTC().Format(time.RFC3339))
+	}
+	if silenceLine := formatIncidentSilence(timeline.Incident.Silence, now); silenceLine != "" {
+		lines = append(lines, "- "+silenceLine)
 	}
 	for i, item := range timeline.CorrelatedChanges {
 		if i >= 3 {
@@ -461,6 +498,12 @@ func FormatIncidentItem(item incident.Record) string {
 	}
 	if item.Acknowledged {
 		line += " acked_by=" + item.AcknowledgedBy
+	}
+	if silence := formatIncidentSilenceCompact(item.Silence, time.Now().UTC()); silence != "" {
+		line += " " + silence
+	}
+	if !item.Open && !item.ClosedAt.IsZero() {
+		line += " resolved"
 	}
 	if strings.TrimSpace(item.Summary) != "" {
 		line += " summary=" + trimForChat(item.Summary, 100)
@@ -561,6 +604,54 @@ func defaultString(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func formatExternalAlert(ext *incident.ExternalAlert) string {
+	if ext == nil {
+		return ""
+	}
+	parts := []string{"external=" + defaultString(ext.Provider, "unknown")}
+	if strings.TrimSpace(ext.AlertName) != "" {
+		parts = append(parts, "alert="+ext.AlertName)
+	}
+	if strings.TrimSpace(ext.Receiver) != "" {
+		parts = append(parts, "receiver="+ext.Receiver)
+	}
+	for _, key := range []string{"instance", "pod", "service", "job"} {
+		if value := strings.TrimSpace(ext.Labels[key]); value != "" {
+			parts = append(parts, "target="+value)
+			break
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatIncidentSilence(silence *incident.ExternalSilence, now time.Time) string {
+	if silence == nil {
+		return ""
+	}
+	parts := []string{"silence=" + incident.SilenceStatus(silence, now)}
+	if strings.TrimSpace(silence.ID) != "" {
+		parts = append(parts, "id="+silence.ID)
+	}
+	if !silence.EndsAt.IsZero() {
+		parts = append(parts, "until="+silence.EndsAt.UTC().Format(time.RFC3339))
+	}
+	if !silence.ExpiredAt.IsZero() {
+		parts = append(parts, "expired_at="+silence.ExpiredAt.UTC().Format(time.RFC3339))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatIncidentSilenceCompact(silence *incident.ExternalSilence, now time.Time) string {
+	if silence == nil {
+		return ""
+	}
+	status := incident.SilenceStatus(silence, now)
+	if strings.TrimSpace(silence.ID) == "" {
+		return "silence=" + status
+	}
+	return "silence=" + status + ":" + silence.ID
 }
 
 func formatStatusMap(m map[string]int) string {
