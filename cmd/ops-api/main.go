@@ -44,6 +44,7 @@ type server struct {
 	metrics       *apiMetrics
 	limiter       *rateLimiter
 	notifier      notify.Notifier
+	notifyCtl     notify.Controller
 	notifyMin     string
 	mu            sync.Mutex
 }
@@ -164,8 +165,15 @@ func main() {
 	telegramBotToken := flag.String("notify-telegram-bot-token", "", "Telegram bot token for health incident notifications")
 	telegramChatID := flag.String("notify-telegram-chat-id", "", "Telegram chat id for health incident notifications")
 	notifyMin := flag.String("notify-min-severity", "warn", "minimum health status to notify: warn|fail")
+	notifyStateFile := flag.String("notify-state-file", "audit/notify-state.db", "notification dedupe state sqlite file")
+	notifyRepeat := flag.Duration("notify-repeat", 30*time.Minute, "repeat identical incident notifications after this interval")
+	notifyRecovery := flag.Bool("notify-recovery", true, "send notification when an incident recovers below the notify threshold")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	flag.Parse()
+	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 
 	store, err := newApprovalBackend(*pendingDriver, *pendingFile)
 	if err != nil {
@@ -173,6 +181,7 @@ func main() {
 	}
 
 	_ = os.MkdirAll("audit", 0o755)
+	notifierImpl := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
 	s := &server{
 		envFile:       *envFile,
 		policyFile:    *policyFile,
@@ -180,7 +189,8 @@ func main() {
 		token:         strings.TrimSpace(*token),
 		approvalStore: store,
 		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
-		notifier:      notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID),
+		notifier:      notifierImpl,
+		notifyCtl:     notify.NewController(notifierImpl, notify.NewSQLiteStore(*notifyStateFile), *notifyMin, *notifyRepeat, *notifyRecovery),
 		notifyMin:     strings.ToLower(strings.TrimSpace(*notifyMin)),
 		metrics: &apiMetrics{
 			requestsTotal:    map[string]int64{},
@@ -307,11 +317,12 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "health_run", Env: envName, Target: envName + "/" + rs.Name, Status: sev, Message: rs.Code + ": " + rs.Message})
 	}
-	if s.notifier != nil && truthy(r.URL.Query().Get("notify")) && notify.ShouldNotify(report.Status, s.notifyMin) {
-		if err := s.notifier.Notify(r.Context(), report); err != nil {
+	if s.notifier != nil && truthy(r.URL.Query().Get("notify")) {
+		decision, err := s.notifyCtl.Process(r.Context(), report)
+		if err != nil {
 			_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Env: envName, Status: "failed", Message: err.Error()})
-		} else {
-			_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Env: envName, Status: "ok", Message: report.Summary})
+		} else if decision.Send {
+			_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Env: envName, Status: "ok", Message: notify.DescribeDecision(decision)})
 		}
 	}
 

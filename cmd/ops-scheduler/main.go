@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/alan666gg/ops-agent/internal/audit"
@@ -27,8 +26,15 @@ func main() {
 	telegramBotToken := flag.String("notify-telegram-bot-token", "", "Telegram bot token for health incident notifications")
 	telegramChatID := flag.String("notify-telegram-chat-id", "", "Telegram chat id for health incident notifications")
 	notifyMin := flag.String("notify-min-severity", "warn", "minimum health status to notify: warn|fail")
+	notifyStateFile := flag.String("notify-state-file", "audit/notify-state.db", "notification dedupe state sqlite file")
+	notifyRepeat := flag.Duration("notify-repeat", 30*time.Minute, "repeat identical incident notifications after this interval")
+	notifyRecovery := flag.Bool("notify-recovery", true, "send notification when an incident recovers below the notify threshold")
 	once := flag.Bool("once", false, "run one cycle and exit")
 	flag.Parse()
+	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 
 	cfg, err := config.LoadEnvironments(*envFile)
 	if err != nil {
@@ -42,6 +48,7 @@ func main() {
 	}
 	_ = os.MkdirAll("audit", 0o755)
 	notifier := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
+	notifyCtl := notify.NewController(notifier, notify.NewSQLiteStore(*notifyStateFile), *notifyMin, *notifyRepeat, *notifyRecovery)
 
 	run := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -70,8 +77,9 @@ func main() {
 				Message: r.Code + ": " + r.Message,
 			})
 		}
-		if notifier != nil && notify.ShouldNotify(report.Status, strings.ToLower(strings.TrimSpace(*notifyMin))) {
-			if err := notifier.Notify(ctx, report); err != nil {
+		if notifier != nil {
+			decision, err := notifyCtl.Process(ctx, report)
+			if err != nil {
 				_ = audit.AppendJSONL(*auditFile, audit.Event{
 					Time:    time.Now().UTC(),
 					Actor:   "ops-scheduler",
@@ -80,14 +88,14 @@ func main() {
 					Status:  "failed",
 					Message: err.Error(),
 				})
-			} else {
+			} else if decision.Send {
 				_ = audit.AppendJSONL(*auditFile, audit.Event{
 					Time:    time.Now().UTC(),
 					Actor:   "ops-scheduler",
 					Action:  "notify",
 					Env:     *envName,
 					Status:  "ok",
-					Message: report.Summary,
+					Message: notify.DescribeDecision(decision),
 				})
 			}
 		}

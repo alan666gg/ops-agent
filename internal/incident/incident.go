@@ -1,7 +1,10 @@
 package incident
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +26,7 @@ type Report struct {
 	Env           string          `json:"env"`
 	Status        string          `json:"status"`
 	Summary       string          `json:"summary"`
+	Fingerprint   string          `json:"fingerprint"`
 	TriggeredAt   time.Time       `json:"triggered_at"`
 	Results       []checks.Result `json:"results"`
 	Suggestions   []Suggestion    `json:"suggestions,omitempty"`
@@ -60,6 +64,7 @@ func BuildReport(source, envName string, env config.Environment, results []check
 
 	report.Suggestions = BuildSuggestions(envName, env, results, policyCfg, recentAutoActions)
 	report.Summary = buildSummary(report)
+	report.Fingerprint = fingerprint(report)
 	return report
 }
 
@@ -156,6 +161,21 @@ func buildSummary(report Report) string {
 	default:
 		return fmt.Sprintf("%s %s: all %d checks passed", report.Source, report.Env, report.TotalChecks)
 	}
+}
+
+func fingerprint(report Report) string {
+	parts := []string{report.Source, report.Env, report.Status}
+	for _, res := range report.FailedChecks {
+		parts = append(parts, "fail:"+res.Name+":"+res.Code)
+	}
+	for _, res := range report.WarningChecks {
+		parts = append(parts, "warn:"+res.Name+":"+res.Code)
+	}
+	if len(parts) > 3 {
+		sort.Strings(parts[3:])
+	}
+	sum := sha1.Sum([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(sum[:])
 }
 
 func depLabel(raw string) string {
