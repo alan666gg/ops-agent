@@ -164,6 +164,7 @@ Telegram commands:
 /health prod
 /promql prod up
 /promql prod --minutes=30 --step=60s avg(rate(http_requests_total[5m]))
+/stats prod
 /incidents 60
 /active prod
 /incident <incident_id>
@@ -185,6 +186,7 @@ Telegram natural language:
 prod 现在状态怎么样
 prod 过去 30 分钟请求量怎么样
 prod CPU 最近是不是升高了
+prod 的 incident 平均多久 ack、多久恢复
 最近 2 小时有什么异常
 列出 prod 的活跃事故
 把 prod 那个 incident 先 ack 掉
@@ -203,6 +205,7 @@ curl -s http://127.0.0.1:8090/ready
 curl -s "http://127.0.0.1:8090/health/run?env=test" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/prometheus/query?env=test&query=up" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/prometheus/query?env=prod&query=avg(rate(http_requests_total%5B5m%5D))&minutes=30&step=60s" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s "http://127.0.0.1:8090/incidents/stats?project=core&env=prod" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s -X POST "http://127.0.0.1:8090/alerts/alertmanager" \
   -H "Authorization: Bearer $OPS_ALERT_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -278,6 +281,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `audit-driver sqlite` + `incident-state-file` upgrades the control plane from append-only logs to a queryable state model with active incidents, acknowledgements, and ownership.
 - `environments.<env>.prometheus` lets the control plane read that environment's Prometheus as an external observability source without giving the bot write access.
 - `/alerts/alertmanager` lets external Alertmanager alerts join the same incident lifecycle; a dedicated `OPS_ALERT_TOKEN` keeps that webhook isolated from the main operator API token.
+- `GET /metrics` now also exports incident lifecycle gauges such as `ops_incident_open_records`, `ops_incident_reopen_total`, `ops_incident_resolution_total`, `ops_incident_avg_mtta_seconds`, and `ops_incident_avg_mttr_seconds`.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 - `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.
@@ -299,6 +303,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - Slash commands and approval buttons always work without any LLM.
 - `/pending` now includes `View / Approve / Reject` inline buttons, and high-risk LLM actions expose `Confirm / Cancel` buttons as a safer alternative to free-text confirmation.
 - `/active`, `/incident`, `/ack`, and `/assign` turn Telegram into a real incident room: responders can see what is currently open, acknowledge it, and claim ownership without leaving chat.
+- `/stats [env]` and `GET /incidents/stats` expose lifecycle aggregates such as open count, reopen count, mean time to acknowledge, and mean time to resolve.
 - `/timeline <incident_id> [minutes]` and the inline `Timeline` button let responders inspect what changed shortly before an incident opened, including likely correlated deploy/runbook changes.
 - `/promql <env> ...` and the `query_prometheus` LLM tool let responders pull Prometheus metrics and recent trends into the same Telegram workflow as incidents and approvals.
 - If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.

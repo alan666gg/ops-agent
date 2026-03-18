@@ -8,31 +8,37 @@ import (
 )
 
 type Record struct {
-	ID              string           `json:"id"`
-	Source          string           `json:"source"`
-	Key             string           `json:"key,omitempty"`
-	Project         string           `json:"project,omitempty"`
-	Env             string           `json:"env"`
-	Status          string           `json:"status"`
-	Summary         string           `json:"summary"`
-	Fingerprint     string           `json:"fingerprint"`
-	Highlights      []string         `json:"highlights,omitempty"`
-	Open            bool             `json:"open"`
-	Acknowledged    bool             `json:"acknowledged"`
-	AcknowledgedBy  string           `json:"acknowledged_by,omitempty"`
-	AcknowledgedAt  time.Time        `json:"acknowledged_at,omitempty"`
-	Owner           string           `json:"owner,omitempty"`
-	Note            string           `json:"note,omitempty"`
-	FirstSeenAt     time.Time        `json:"first_seen_at,omitempty"`
-	LastSeenAt      time.Time        `json:"last_seen_at,omitempty"`
-	LastChangedAt   time.Time        `json:"last_changed_at,omitempty"`
-	ClosedAt        time.Time        `json:"closed_at,omitempty"`
-	UpdatedAt       time.Time        `json:"updated_at,omitempty"`
-	FailCount       int              `json:"fail_count"`
-	WarnCount       int              `json:"warn_count"`
-	SuppressedCount int              `json:"suppressed_count"`
-	External        *ExternalAlert   `json:"external,omitempty"`
-	Silence         *ExternalSilence `json:"silence,omitempty"`
+	ID               string           `json:"id"`
+	Source           string           `json:"source"`
+	Key              string           `json:"key,omitempty"`
+	Project          string           `json:"project,omitempty"`
+	Env              string           `json:"env"`
+	Status           string           `json:"status"`
+	Summary          string           `json:"summary"`
+	Fingerprint      string           `json:"fingerprint"`
+	Highlights       []string         `json:"highlights,omitempty"`
+	Open             bool             `json:"open"`
+	Acknowledged     bool             `json:"acknowledged"`
+	AcknowledgedBy   string           `json:"acknowledged_by,omitempty"`
+	AcknowledgedAt   time.Time        `json:"acknowledged_at,omitempty"`
+	Owner            string           `json:"owner,omitempty"`
+	Note             string           `json:"note,omitempty"`
+	FirstSeenAt      time.Time        `json:"first_seen_at,omitempty"`
+	LastSeenAt       time.Time        `json:"last_seen_at,omitempty"`
+	LastChangedAt    time.Time        `json:"last_changed_at,omitempty"`
+	ClosedAt         time.Time        `json:"closed_at,omitempty"`
+	UpdatedAt        time.Time        `json:"updated_at,omitempty"`
+	OpenCount        int              `json:"open_count,omitempty"`
+	ReopenCount      int              `json:"reopen_count,omitempty"`
+	ResolutionCount  int              `json:"resolution_count,omitempty"`
+	AckCount         int              `json:"ack_count,omitempty"`
+	TotalAckSeconds  float64          `json:"total_ack_seconds,omitempty"`
+	TotalOpenSeconds float64          `json:"total_open_seconds,omitempty"`
+	FailCount        int              `json:"fail_count"`
+	WarnCount        int              `json:"warn_count"`
+	SuppressedCount  int              `json:"suppressed_count"`
+	External         *ExternalAlert   `json:"external,omitempty"`
+	Silence          *ExternalSilence `json:"silence,omitempty"`
 }
 
 type Filter struct {
@@ -103,9 +109,14 @@ func (m *MemoryStore) Ack(id, actor, note string, now time.Time) (Record, error)
 	if !ok {
 		return Record{}, fmt.Errorf("incident not found: %s", id)
 	}
+	shouldMeasureAck := !rec.Acknowledged && rec.Open && !rec.FirstSeenAt.IsZero() && now.After(rec.FirstSeenAt)
 	rec.Acknowledged = true
 	rec.AcknowledgedBy = strings.TrimSpace(actor)
 	rec.AcknowledgedAt = now.UTC()
+	if shouldMeasureAck {
+		rec.AckCount++
+		rec.TotalAckSeconds += now.Sub(rec.FirstSeenAt).Seconds()
+	}
 	if note = strings.TrimSpace(note); note != "" {
 		rec.Note = note
 	}
@@ -227,6 +238,13 @@ func syncRecord(prev Record, ok bool, report Report, now time.Time) Record {
 		next.Open = true
 		next.ClosedAt = time.Time{}
 		next.FirstSeenAt = now
+		next.OpenCount = prev.OpenCount + 1
+		if !ok {
+			next.OpenCount = 1
+		}
+		if ok && !prev.ClosedAt.IsZero() {
+			next.ReopenCount = prev.ReopenCount + 1
+		}
 		next.LastChangedAt = now
 		next.Acknowledged = false
 		next.AcknowledgedBy = ""
@@ -244,6 +262,10 @@ func syncRecord(prev Record, ok bool, report Report, now time.Time) Record {
 		}
 	case !currentOpen && prev.Open:
 		next.Open = false
+		if !prev.FirstSeenAt.IsZero() && now.After(prev.FirstSeenAt) {
+			next.TotalOpenSeconds = prev.TotalOpenSeconds + now.Sub(prev.FirstSeenAt).Seconds()
+		}
+		next.ResolutionCount = prev.ResolutionCount + 1
 		next.ClosedAt = now
 		next.LastChangedAt = now
 	default:

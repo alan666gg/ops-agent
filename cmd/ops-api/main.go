@@ -169,6 +169,14 @@ type incidentSummary struct {
 	TopTargets    []string       `json:"top_targets"`
 }
 
+type incidentStatsResponse struct {
+	Projects []string              `json:"projects,omitempty"`
+	Env      string                `json:"env,omitempty"`
+	Source   string                `json:"source,omitempty"`
+	Summary  incident.Stats        `json:"summary"`
+	Scopes   []incident.ScopeStats `json:"scopes,omitempty"`
+}
+
 type incidentActionRequest struct {
 	ID    string `json:"id"`
 	Actor string `json:"actor"`
@@ -304,6 +312,7 @@ func main() {
 	mux.HandleFunc("/alerts/alertmanager", s.handleAlertmanagerWebhook)
 	mux.HandleFunc("/prometheus/query", s.handlePrometheusQuery)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
+	mux.HandleFunc("/incidents/stats", s.handleIncidentStats)
 	mux.HandleFunc("/incidents/active", s.handleActiveIncidents)
 	mux.HandleFunc("/incidents/get", s.handleGetIncident)
 	mux.HandleFunc("/incidents/timeline", s.handleIncidentTimeline)
@@ -461,6 +470,17 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 	record, err := s.syncIncident(report)
 	if err != nil {
 		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "incident_sync", Project: project, Env: envName, Status: "failed", Message: err.Error()})
+	} else {
+		_ = s.auditStore.Append(audit.Event{
+			Time:    time.Now().UTC(),
+			Actor:   "ops-api",
+			Action:  "incident_sync",
+			Project: project,
+			Env:     envName,
+			Target:  record.ID,
+			Status:  defaultString(record.Status, "ok"),
+			Message: "transition=" + incident.LifecycleTransition(record) + " summary=" + trimAuditMessage(report.Summary, 160),
+		})
 	}
 	if s.notifyCtl.Enabled() && truthy(r.URL.Query().Get("notify")) {
 		if shouldSuppressAcknowledged(record, report) {
@@ -935,6 +955,16 @@ func (s *server) handleAlertmanagerWebhook(w http.ResponseWriter, r *http.Reques
 		items = append(items, record)
 		_ = s.auditStore.Append(audit.Event{
 			Time:    now,
+			Actor:   "ops-api",
+			Action:  "incident_sync",
+			Project: report.Project,
+			Env:     report.Env,
+			Target:  record.ID,
+			Status:  defaultString(record.Status, "ok"),
+			Message: "transition=" + incident.LifecycleTransition(record) + " summary=" + trimAuditMessage(report.Summary, 160),
+		})
+		_ = s.auditStore.Append(audit.Event{
+			Time:    now,
 			Actor:   "alertmanager",
 			Action:  "alertmanager_receive",
 			Project: report.Project,
@@ -1054,6 +1084,35 @@ func (s *server) handlePrometheusQuery(w http.ResponseWriter, r *http.Request) {
 		"project": env.ProjectName(),
 		"env":     envName,
 		"data":    out,
+	})
+}
+
+func (s *server) handleIncidentStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	filter := incident.Filter{
+		Projects: queryProjects(r),
+		Env:      strings.TrimSpace(r.URL.Query().Get("env")),
+		Source:   strings.TrimSpace(r.URL.Query().Get("source")),
+	}
+	items, err := s.incidentStore.List(filter)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	now := time.Now().UTC()
+	_ = json.NewEncoder(w).Encode(incidentStatsResponse{
+		Projects: filter.Projects,
+		Env:      filter.Env,
+		Source:   filter.Source,
+		Summary:  incident.ComputeStats(items, now),
+		Scopes:   incident.GroupStats(items, now),
 	})
 }
 
@@ -1268,32 +1327,109 @@ func (s *server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	s.metrics.mu.Lock()
-	defer s.metrics.mu.Unlock()
+	requestsTotal := cloneInt64Map(s.metrics.requestsTotal)
+	errorsTotal := cloneInt64Map(s.metrics.errorsTotal)
+	durationMsTotal := cloneFloat64Map(s.metrics.durationMsTotal)
+	actionsTotal := cloneInt64Map(s.metrics.actionsTotal)
+	actionsFailTotal := cloneInt64Map(s.metrics.actionsFailTotal)
+	s.metrics.mu.Unlock()
 	fmt.Fprintln(w, "# HELP ops_api_requests_total Total HTTP requests by path")
 	fmt.Fprintln(w, "# TYPE ops_api_requests_total counter")
-	for k, v := range s.metrics.requestsTotal {
+	for k, v := range requestsTotal {
 		fmt.Fprintf(w, "ops_api_requests_total{path=%q} %d\n", k, v)
 	}
 	fmt.Fprintln(w, "# HELP ops_api_errors_total Total HTTP 5xx and 4xx responses by path")
 	fmt.Fprintln(w, "# TYPE ops_api_errors_total counter")
-	for k, v := range s.metrics.errorsTotal {
+	for k, v := range errorsTotal {
 		fmt.Fprintf(w, "ops_api_errors_total{path=%q} %d\n", k, v)
 	}
 	fmt.Fprintln(w, "# HELP ops_api_request_duration_ms_total Total request duration in milliseconds by path")
 	fmt.Fprintln(w, "# TYPE ops_api_request_duration_ms_total counter")
-	for k, v := range s.metrics.durationMsTotal {
+	for k, v := range durationMsTotal {
 		fmt.Fprintf(w, "ops_api_request_duration_ms_total{path=%q} %.3f\n", k, v)
 	}
 	fmt.Fprintln(w, "# HELP ops_api_actions_total Total action executions by action")
 	fmt.Fprintln(w, "# TYPE ops_api_actions_total counter")
-	for k, v := range s.metrics.actionsTotal {
+	for k, v := range actionsTotal {
 		fmt.Fprintf(w, "ops_api_actions_total{action=%q} %d\n", k, v)
 	}
 	fmt.Fprintln(w, "# HELP ops_api_action_failures_total Total failed action executions by action")
 	fmt.Fprintln(w, "# TYPE ops_api_action_failures_total counter")
-	for k, v := range s.metrics.actionsFailTotal {
+	for k, v := range actionsFailTotal {
 		fmt.Fprintf(w, "ops_api_action_failures_total{action=%q} %d\n", k, v)
 	}
+	if s.incidentStore == nil {
+		return
+	}
+	items, err := s.incidentStore.List(incident.Filter{})
+	if err != nil {
+		fmt.Fprintln(w, "# HELP ops_api_incident_stats_scrape_error Whether incident stats scraping failed")
+		fmt.Fprintln(w, "# TYPE ops_api_incident_stats_scrape_error gauge")
+		fmt.Fprintln(w, "ops_api_incident_stats_scrape_error 1")
+		return
+	}
+	now := time.Now().UTC()
+	summary := incident.ComputeStats(items, now)
+	fmt.Fprintln(w, "# HELP ops_incident_records_total Total incident records tracked by the control plane")
+	fmt.Fprintln(w, "# TYPE ops_incident_records_total gauge")
+	fmt.Fprintf(w, "ops_incident_records_total %d\n", summary.TotalRecords)
+	fmt.Fprintln(w, "# HELP ops_incident_open_records Total currently open incidents")
+	fmt.Fprintln(w, "# TYPE ops_incident_open_records gauge")
+	fmt.Fprintf(w, "ops_incident_open_records %d\n", summary.OpenRecords)
+	fmt.Fprintln(w, "# HELP ops_incident_acknowledged_records Total acknowledged incidents")
+	fmt.Fprintln(w, "# TYPE ops_incident_acknowledged_records gauge")
+	fmt.Fprintf(w, "ops_incident_acknowledged_records %d\n", summary.AcknowledgedRecords)
+	fmt.Fprintln(w, "# HELP ops_incident_silenced_records Total incidents with an active external silence")
+	fmt.Fprintln(w, "# TYPE ops_incident_silenced_records gauge")
+	fmt.Fprintf(w, "ops_incident_silenced_records %d\n", summary.SilencedRecords)
+	fmt.Fprintln(w, "# HELP ops_incident_reopen_total Total reopen transitions stored in incident history")
+	fmt.Fprintln(w, "# TYPE ops_incident_reopen_total gauge")
+	fmt.Fprintf(w, "ops_incident_reopen_total %d\n", summary.ReopenCount)
+	fmt.Fprintln(w, "# HELP ops_incident_resolution_total Total resolution transitions stored in incident history")
+	fmt.Fprintln(w, "# TYPE ops_incident_resolution_total gauge")
+	fmt.Fprintf(w, "ops_incident_resolution_total %d\n", summary.ResolutionCount)
+	fmt.Fprintln(w, "# HELP ops_incident_ack_total Total acknowledgement events stored in incident history")
+	fmt.Fprintln(w, "# TYPE ops_incident_ack_total gauge")
+	fmt.Fprintf(w, "ops_incident_ack_total %d\n", summary.AckCount)
+	fmt.Fprintln(w, "# HELP ops_incident_avg_mtta_seconds Average mean-time-to-ack across tracked incidents")
+	fmt.Fprintln(w, "# TYPE ops_incident_avg_mtta_seconds gauge")
+	fmt.Fprintf(w, "ops_incident_avg_mtta_seconds %.3f\n", summary.AvgMTTASeconds)
+	fmt.Fprintln(w, "# HELP ops_incident_avg_mttr_seconds Average mean-time-to-resolve across tracked incidents")
+	fmt.Fprintln(w, "# TYPE ops_incident_avg_mttr_seconds gauge")
+	fmt.Fprintf(w, "ops_incident_avg_mttr_seconds %.3f\n", summary.AvgMTTRSeconds)
+	fmt.Fprintln(w, "# HELP ops_incident_oldest_open_age_seconds Age in seconds of the oldest currently open incident")
+	fmt.Fprintln(w, "# TYPE ops_incident_oldest_open_age_seconds gauge")
+	fmt.Fprintf(w, "ops_incident_oldest_open_age_seconds %.3f\n", summary.OldestOpenAgeSeconds)
+	fmt.Fprintln(w, "# HELP ops_incident_scope_open_records Open incidents grouped by project, env, and source")
+	fmt.Fprintln(w, "# TYPE ops_incident_scope_open_records gauge")
+	fmt.Fprintln(w, "# HELP ops_incident_scope_silenced_records Silenced incidents grouped by project, env, and source")
+	fmt.Fprintln(w, "# TYPE ops_incident_scope_silenced_records gauge")
+	fmt.Fprintln(w, "# HELP ops_incident_scope_avg_mtta_seconds Average mean-time-to-ack grouped by project, env, and source")
+	fmt.Fprintln(w, "# TYPE ops_incident_scope_avg_mtta_seconds gauge")
+	fmt.Fprintln(w, "# HELP ops_incident_scope_avg_mttr_seconds Average mean-time-to-resolve grouped by project, env, and source")
+	fmt.Fprintln(w, "# TYPE ops_incident_scope_avg_mttr_seconds gauge")
+	for _, scope := range incident.GroupStats(items, now) {
+		fmt.Fprintf(w, "ops_incident_scope_open_records{project=%q,env=%q,source=%q} %d\n", scope.Project, scope.Env, scope.Source, scope.Stats.OpenRecords)
+		fmt.Fprintf(w, "ops_incident_scope_silenced_records{project=%q,env=%q,source=%q} %d\n", scope.Project, scope.Env, scope.Source, scope.Stats.SilencedRecords)
+		fmt.Fprintf(w, "ops_incident_scope_avg_mtta_seconds{project=%q,env=%q,source=%q} %.3f\n", scope.Project, scope.Env, scope.Source, scope.Stats.AvgMTTASeconds)
+		fmt.Fprintf(w, "ops_incident_scope_avg_mttr_seconds{project=%q,env=%q,source=%q} %.3f\n", scope.Project, scope.Env, scope.Source, scope.Stats.AvgMTTRSeconds)
+	}
+}
+
+func cloneInt64Map(src map[string]int64) map[string]int64 {
+	out := make(map[string]int64, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneFloat64Map(src map[string]float64) map[string]float64 {
+	out := make(map[string]float64, len(src))
+	for key, value := range src {
+		out[key] = value
+	}
+	return out
 }
 
 func (s *server) metricsRecord(path string, status int, d time.Duration) {
@@ -1631,6 +1767,17 @@ func defaultString(v, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(v)
+}
+
+func trimAuditMessage(v string, limit int) string {
+	v = strings.TrimSpace(v)
+	if limit <= 0 || len(v) <= limit {
+		return v
+	}
+	if limit < 4 {
+		return v[:limit]
+	}
+	return v[:limit-3] + "..."
 }
 
 func runAction(action string, args []string, timeoutS int, host *config.Host) rbexec.Result {

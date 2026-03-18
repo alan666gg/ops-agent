@@ -230,6 +230,21 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 			return "prometheus query failed: " + err.Error(), nil
 		}
 		return chatops.FormatPrometheusQuery(resp), nil
+	case "stats":
+		projects, err := agent.Authorizer.AllowedProjects(actor)
+		if err != nil {
+			return "incident stats denied: " + err.Error(), nil
+		}
+		if cmd.Env != "" {
+			if _, err := authorizeCommandEnv(agent, actor, cmd.Env); err != nil {
+				return "incident stats denied: " + err.Error(), nil
+			}
+		}
+		resp, err := api.IncidentStats(ctx, cmd.Env, projects)
+		if err != nil {
+			return "incident stats failed: " + err.Error(), nil
+		}
+		return chatops.FormatIncidentStats(resp), nil
 	case "incidents":
 		projects, err := agent.Authorizer.AllowedProjects(actor)
 		if err != nil {

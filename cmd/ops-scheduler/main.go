@@ -242,6 +242,17 @@ func main() {
 				Status:  "failed",
 				Message: err.Error(),
 			})
+		} else {
+			_ = auditStore.Append(audit.Event{
+				Time:    time.Now().UTC(),
+				Actor:   "ops-scheduler",
+				Action:  "incident_sync",
+				Project: project,
+				Env:     *envName,
+				Target:  record.ID,
+				Status:  defaultStatus(record.Status),
+				Message: "transition=" + incident.LifecycleTransition(record) + " summary=" + trimAuditSummary(report.Summary),
+			})
 		}
 		if notifyCtl.Enabled() {
 			if suppressAcknowledged(record, report) {
@@ -394,4 +405,20 @@ func suppressAcknowledged(rec incident.Record, report incident.Report) bool {
 		return false
 	}
 	return strings.TrimSpace(rec.Fingerprint) == strings.TrimSpace(report.Fingerprint)
+}
+
+func defaultStatus(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "ok"
+	}
+	return v
+}
+
+func trimAuditSummary(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) <= 160 {
+		return v
+	}
+	return v[:157] + "..."
 }

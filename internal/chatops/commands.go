@@ -43,6 +43,11 @@ func ParseCommand(text string) (Command, error) {
 	switch out.Name {
 	case "start", "help", "pending", "reset":
 		return out, nil
+	case "stats":
+		if len(fields) > 1 {
+			out.Env = fields[1]
+		}
+		return out, nil
 	case "active":
 		if len(fields) > 1 {
 			out.Env = fields[1]
@@ -198,6 +203,7 @@ func HelpText() string {
 		"/reset",
 		"/health <env>",
 		"/promql <env> [--minutes=30] [--step=60s] <query>",
+		"/stats [env]",
 		"/incidents [minutes]",
 		"/pending",
 		"/active [env]",
@@ -328,6 +334,33 @@ func FormatIncidentSummary(summary IncidentSummary) string {
 			break
 		}
 		lines = append(lines, "- top target: "+target)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatIncidentStats(resp IncidentStatsResponse) string {
+	lines := []string{
+		"incident stats",
+		fmt.Sprintf("- total=%d open=%d resolved=%d", resp.Summary.TotalRecords, resp.Summary.OpenRecords, resp.Summary.ResolvedRecords),
+		fmt.Sprintf("- acknowledged=%d assigned=%d silenced=%d", resp.Summary.AcknowledgedRecords, resp.Summary.AssignedRecords, resp.Summary.SilencedRecords),
+		fmt.Sprintf("- reopen=%d resolved_cycles=%d ack_events=%d", resp.Summary.ReopenCount, resp.Summary.ResolutionCount, resp.Summary.AckCount),
+		fmt.Sprintf("- avg_mtta=%.1fs avg_mttr=%.1fs", resp.Summary.AvgMTTASeconds, resp.Summary.AvgMTTRSeconds),
+	}
+	if strings.TrimSpace(resp.Env) != "" {
+		lines = append(lines, "- env="+resp.Env)
+	}
+	if len(resp.Projects) > 0 {
+		lines = append(lines, "- projects="+strings.Join(resp.Projects, ","))
+	}
+	if resp.Summary.OldestOpenAgeSeconds > 0 {
+		lines = append(lines, fmt.Sprintf("- oldest_open_age=%.1fs", resp.Summary.OldestOpenAgeSeconds))
+	}
+	for i, scope := range resp.Scopes {
+		if i >= 6 {
+			lines = append(lines, fmt.Sprintf("- scopes ... and %d more", len(resp.Scopes)-i))
+			break
+		}
+		lines = append(lines, fmt.Sprintf("- scope project=%s env=%s source=%s open=%d silenced=%d mtta=%.1fs mttr=%.1fs", defaultString(scope.Project, "default"), defaultString(scope.Env, "test"), defaultString(scope.Source, "unknown"), scope.Stats.OpenRecords, scope.Stats.SilencedRecords, scope.Stats.AvgMTTASeconds, scope.Stats.AvgMTTRSeconds))
 	}
 	return strings.Join(lines, "\n")
 }

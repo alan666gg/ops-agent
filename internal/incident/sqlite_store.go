@@ -59,7 +59,7 @@ func (s SQLiteStore) List(filter Filter) ([]Record, error) {
 	defer db.Close()
 
 	query := `
-SELECT id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, silence_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count
+SELECT id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, silence_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, open_count, reopen_count, resolution_count, ack_count, total_ack_seconds, total_open_seconds, fail_count, warn_count, suppressed_count
 FROM incident_records
 WHERE 1=1
 `
@@ -226,6 +226,12 @@ CREATE TABLE IF NOT EXISTS incident_records (
   last_changed_at TEXT NOT NULL DEFAULT '',
   closed_at TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT '',
+  open_count INTEGER NOT NULL DEFAULT 0,
+  reopen_count INTEGER NOT NULL DEFAULT 0,
+  resolution_count INTEGER NOT NULL DEFAULT 0,
+  ack_count INTEGER NOT NULL DEFAULT 0,
+  total_ack_seconds REAL NOT NULL DEFAULT 0,
+  total_open_seconds REAL NOT NULL DEFAULT 0,
   fail_count INTEGER NOT NULL DEFAULT 0,
   warn_count INTEGER NOT NULL DEFAULT 0,
   suppressed_count INTEGER NOT NULL DEFAULT 0
@@ -248,12 +254,24 @@ CREATE INDEX IF NOT EXISTS idx_incident_project_env ON incident_records(project,
 	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return err
 	}
+	for _, stmt := range []string{
+		`ALTER TABLE incident_records ADD COLUMN open_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE incident_records ADD COLUMN reopen_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE incident_records ADD COLUMN resolution_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE incident_records ADD COLUMN ack_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE incident_records ADD COLUMN total_ack_seconds REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE incident_records ADD COLUMN total_open_seconds REAL NOT NULL DEFAULT 0`,
+	} {
+		if _, err = db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
 	return nil
 }
 
 func (s SQLiteStore) get(db *sql.DB, id string) (Record, bool, error) {
 	row := db.QueryRow(`
-SELECT id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, silence_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count
+SELECT id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, silence_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, open_count, reopen_count, resolution_count, ack_count, total_ack_seconds, total_open_seconds, fail_count, warn_count, suppressed_count
 FROM incident_records
 WHERE id = ?
 `, strings.TrimSpace(id))
@@ -281,8 +299,8 @@ func (s SQLiteStore) put(db *sql.DB, rec Record) error {
 		return err
 	}
 	_, err = db.Exec(`
-INSERT INTO incident_records(id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, silence_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, fail_count, warn_count, suppressed_count)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO incident_records(id, source, scope_key, project, env, status, summary, fingerprint, highlights_json, external_json, silence_json, open, acknowledged, acknowledged_by, acknowledged_at, owner, note, first_seen_at, last_seen_at, last_changed_at, closed_at, updated_at, open_count, reopen_count, resolution_count, ack_count, total_ack_seconds, total_open_seconds, fail_count, warn_count, suppressed_count)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   source=excluded.source,
   scope_key=excluded.scope_key,
@@ -305,10 +323,16 @@ ON CONFLICT(id) DO UPDATE SET
   last_changed_at=excluded.last_changed_at,
   closed_at=excluded.closed_at,
   updated_at=excluded.updated_at,
+  open_count=excluded.open_count,
+  reopen_count=excluded.reopen_count,
+  resolution_count=excluded.resolution_count,
+  ack_count=excluded.ack_count,
+  total_ack_seconds=excluded.total_ack_seconds,
+  total_open_seconds=excluded.total_open_seconds,
   fail_count=excluded.fail_count,
   warn_count=excluded.warn_count,
   suppressed_count=excluded.suppressed_count
-`, strings.TrimSpace(rec.ID), rec.Source, rec.Key, defaultProject(rec.Project), rec.Env, rec.Status, rec.Summary, rec.Fingerprint, string(highlightsJSON), string(externalJSON), string(silenceJSON), boolToInt(rec.Open), boolToInt(rec.Acknowledged), rec.AcknowledgedBy, formatTime(rec.AcknowledgedAt), rec.Owner, rec.Note, formatTime(rec.FirstSeenAt), formatTime(rec.LastSeenAt), formatTime(rec.LastChangedAt), formatTime(rec.ClosedAt), formatTime(rec.UpdatedAt), rec.FailCount, rec.WarnCount, rec.SuppressedCount)
+`, strings.TrimSpace(rec.ID), rec.Source, rec.Key, defaultProject(rec.Project), rec.Env, rec.Status, rec.Summary, rec.Fingerprint, string(highlightsJSON), string(externalJSON), string(silenceJSON), boolToInt(rec.Open), boolToInt(rec.Acknowledged), rec.AcknowledgedBy, formatTime(rec.AcknowledgedAt), rec.Owner, rec.Note, formatTime(rec.FirstSeenAt), formatTime(rec.LastSeenAt), formatTime(rec.LastChangedAt), formatTime(rec.ClosedAt), formatTime(rec.UpdatedAt), rec.OpenCount, rec.ReopenCount, rec.ResolutionCount, rec.AckCount, rec.TotalAckSeconds, rec.TotalOpenSeconds, rec.FailCount, rec.WarnCount, rec.SuppressedCount)
 	return err
 }
 
@@ -323,7 +347,7 @@ func scanRecord(s recordScanner) (Record, error) {
 	var silenceJSON string
 	var openInt, ackInt int
 	var ackAt, firstSeen, lastSeen, lastChanged, closedAt, updatedAt string
-	if err := s.Scan(&rec.ID, &rec.Source, &rec.Key, &rec.Project, &rec.Env, &rec.Status, &rec.Summary, &rec.Fingerprint, &highlightsJSON, &externalJSON, &silenceJSON, &openInt, &ackInt, &rec.AcknowledgedBy, &ackAt, &rec.Owner, &rec.Note, &firstSeen, &lastSeen, &lastChanged, &closedAt, &updatedAt, &rec.FailCount, &rec.WarnCount, &rec.SuppressedCount); err != nil {
+	if err := s.Scan(&rec.ID, &rec.Source, &rec.Key, &rec.Project, &rec.Env, &rec.Status, &rec.Summary, &rec.Fingerprint, &highlightsJSON, &externalJSON, &silenceJSON, &openInt, &ackInt, &rec.AcknowledgedBy, &ackAt, &rec.Owner, &rec.Note, &firstSeen, &lastSeen, &lastChanged, &closedAt, &updatedAt, &rec.OpenCount, &rec.ReopenCount, &rec.ResolutionCount, &rec.AckCount, &rec.TotalAckSeconds, &rec.TotalOpenSeconds, &rec.FailCount, &rec.WarnCount, &rec.SuppressedCount); err != nil {
 		return Record{}, err
 	}
 	rec.Open = openInt == 1

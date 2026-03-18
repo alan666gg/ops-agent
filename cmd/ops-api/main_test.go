@@ -219,6 +219,81 @@ func TestHandlePrometheusQuery(t *testing.T) {
 	}
 }
 
+func TestHandleIncidentStatsAndMetrics(t *testing.T) {
+	now := time.Now().UTC()
+	store := &incident.MemoryStore{}
+	rec, err := store.SyncReport(incident.Report{
+		Source:      "ops-scheduler",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "api unhealthy",
+		Fingerprint: "fp-1",
+		FailCount:   1,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Ack(rec.ID, "tg:@ops", "investigating", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SyncReport(incident.Report{
+		Source:      "ops-scheduler",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "ok",
+		Summary:     "api recovered",
+		Fingerprint: "fp-ok",
+	}, now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SyncReport(incident.Report{
+		Source:      "ops-scheduler",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "api unhealthy again",
+		Fingerprint: "fp-2",
+		FailCount:   1,
+	}, now.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{
+		incidentStore: store,
+		metrics: &apiMetrics{
+			requestsTotal:    map[string]int64{},
+			errorsTotal:      map[string]int64{},
+			durationMsTotal:  map[string]float64{},
+			actionsTotal:     map[string]int64{},
+			actionsFailTotal: map[string]int64{},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/incidents/stats?project=core&env=prod", nil)
+	rr := httptest.NewRecorder()
+	s.handleIncidentStats(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var stats incidentStatsResponse
+	if err := json.NewDecoder(rr.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.OpenRecords != 1 || stats.Summary.ReopenCount != 1 || stats.Summary.AckCount != 1 || stats.Summary.ResolutionCount != 1 {
+		t.Fatalf("unexpected incident stats response: %+v", stats)
+	}
+
+	mreq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	mrr := httptest.NewRecorder()
+	s.handleMetrics(mrr, mreq)
+	body := mrr.Body.String()
+	for _, want := range []string{"ops_incident_open_records 1", "ops_incident_reopen_total 1", "ops_incident_resolution_total 1", `ops_incident_scope_open_records{project="core",env="prod",source="ops-scheduler"} 1`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected %q in metrics body:\n%s", want, body)
+		}
+	}
+}
+
 func TestHandleAlertmanagerWebhook(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "environments.yaml")
@@ -271,7 +346,13 @@ func TestHandleAlertmanagerWebhook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[0].Action != "alertmanager_receive" {
+	count := 0
+	for _, evt := range events {
+		if evt.Action == "alertmanager_receive" {
+			count++
+		}
+	}
+	if count != 2 {
 		t.Fatalf("unexpected audit events: %+v", events)
 	}
 }

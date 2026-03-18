@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ops-agent API
-  version: 0.3.5
+  version: 0.3.6
 servers:
   - url: http://127.0.0.1:8090
 components:
@@ -271,6 +271,21 @@ paths:
           schema: { type: integer, default: 50 }
       responses:
         '200': { description: Active incident list }
+  /incidents/stats:
+    get:
+      summary: Get aggregated incident lifecycle stats
+      parameters:
+        - in: query
+          name: project
+          schema: { type: string }
+        - in: query
+          name: env
+          schema: { type: string }
+        - in: query
+          name: source
+          schema: { type: string }
+      responses:
+        '200': { description: Incident lifecycle stats }
   /incidents/get:
     get:
       summary: Get one incident by incident_id

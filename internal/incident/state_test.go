@@ -185,3 +185,70 @@ func TestMemoryStoreSetAndExpireSilence(t *testing.T) {
 		t.Fatalf("unexpected silence after expire: %+v", rec)
 	}
 }
+
+func TestMemoryStoreTracksLifecycleStats(t *testing.T) {
+	store := &MemoryStore{}
+	now := time.Now().UTC()
+	rec, err := store.SyncReport(Report{
+		Source:      "ops-scheduler",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "api unhealthy",
+		Fingerprint: "fp-1",
+		FailCount:   1,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.OpenCount != 1 || rec.ReopenCount != 0 {
+		t.Fatalf("unexpected initial lifecycle counts: %+v", rec)
+	}
+	rec, err = store.Ack(rec.ID, "tg:@ops", "investigating", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.AckCount != 1 || rec.TotalAckSeconds < 59 || rec.TotalAckSeconds > 61 {
+		t.Fatalf("unexpected ack stats: %+v", rec)
+	}
+	rec, err = store.SyncReport(Report{
+		Source:      "ops-scheduler",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "ok",
+		Summary:     "api recovered",
+		Fingerprint: "fp-ok",
+	}, now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.ResolutionCount != 1 || rec.TotalOpenSeconds < 299 || rec.TotalOpenSeconds > 301 {
+		t.Fatalf("unexpected resolution stats: %+v", rec)
+	}
+	rec, err = store.SyncReport(Report{
+		Source:      "ops-scheduler",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "api unhealthy again",
+		Fingerprint: "fp-2",
+		FailCount:   1,
+	}, now.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.OpenCount != 2 || rec.ReopenCount != 1 || !rec.Open {
+		t.Fatalf("unexpected reopen stats: %+v", rec)
+	}
+	items, err := store.List(Filter{Projects: []string{"core"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := ComputeStats(items, now.Add(11*time.Minute))
+	if stats.OpenRecords != 1 || stats.ReopenCount != 1 || stats.AckCount != 1 || stats.ResolutionCount != 1 {
+		t.Fatalf("unexpected aggregate stats: %+v", stats)
+	}
+	if stats.AvgMTTASeconds < 59 || stats.AvgMTTASeconds > 61 || stats.AvgMTTRSeconds < 299 || stats.AvgMTTRSeconds > 301 {
+		t.Fatalf("unexpected aggregate timings: %+v", stats)
+	}
+}

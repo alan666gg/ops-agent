@@ -27,6 +27,7 @@ Endpoints:
 - `POST /actions/reject` (Bearer token)
 - `GET /audit/tail?file=api.jsonl&limit=50` (Bearer token; only `.jsonl` files in the audit dir)
 - `GET /incidents/summary?minutes=60` (Bearer token)
+- `GET /incidents/stats?project=core&env=prod` (Bearer token)
 - `GET /incidents/active?project=core&env=prod` (Bearer token)
 - `GET /incidents/get?id=<incident_id>` (Bearer token)
 - `GET /incidents/timeline?id=<incident_id>&minutes=90` (Bearer token)
@@ -46,11 +47,13 @@ If a service declares `host`, the response can suppress downstream service sympt
 If a service declares `slo`, the response can also include synthetic `slo_availability_*` results based on recent audit history.
 If the API is started with notifier flags, `/health/run?...&notify=1` also sends the incident summary when the status is `warn` or `fail`.
 `--incident-state-file` persists active incident state, acknowledgement, owner, and notes; the same store powers `/incidents/active`, `/incidents/get`, `/incidents/timeline`, `/incidents/ack`, and `/incidents/assign`.
+`GET /incidents/stats` summarizes lifecycle state from the incident store, including open/resolved counts, reopen totals, MTTA, and MTTR, optionally scoped by `project`, `env`, or `source`.
 Acknowledged incidents suppress duplicate notify repeats until the fingerprint changes again.
 `GET /incidents/timeline` correlates recent audit events around one incident and highlights likely change events, such as deploy/runbook actions shortly before the incident first appeared.
 `GET /prometheus/query` supports instant queries by default, or range queries when `minutes` is set. `step` is optional and defaults to an auto-selected resolution.
 For Alertmanager, use a dedicated `OPS_ALERT_TOKEN` so webhook senders do not need the broader operator API token.
 If `--alertmanager-sync-ack` is enabled, acknowledging an Alertmanager-backed incident also creates an Alertmanager silence for the alert's original labels. Use `OPS_ALERTMANAGER_API_TOKEN` when the Alertmanager API itself requires auth.
 `POST /incidents/unsilence` expires one stored Alertmanager silence and updates the same incident record so Telegram and timeline views immediately show `silence=expired`.
+`GET /metrics` now exports both API traffic counters and incident lifecycle gauges, including global and per-scope open/silenced counts plus average MTTA/MTTR.
 `--notify-config` replaces direct notifier flags with a routed notification policy that supports named receivers, silences, and maintenance windows.
 `--notify-trigger-after` and `--notify-recovery-after` help suppress flapping by requiring consecutive unhealthy or healthy samples before opening or closing an incident.

@@ -38,6 +38,7 @@ Supported commands:
 - `/reset`
 - `/health <env>`
 - `/promql <env> [--minutes=30] [--step=60s] <query>`
+- `/stats [env]`
 - `/incidents [minutes]`
 - `/active [env]`
 - `/incident <incident_id>`
@@ -57,6 +58,7 @@ Natural-language examples:
 - `prod 现在状态怎么样`
 - `prod 过去 30 分钟请求量怎么样`
 - `prod CPU 最近是不是升高了`
+- `prod 的 incident 平均多久 ack、多久恢复`
 - `最近 2 小时有什么异常`
 - `列出 prod 的活跃事故`
 - `先 ack 掉 prod 那个 incident`
@@ -77,3 +79,4 @@ Interaction notes:
 - `/incident <incident_id>` returns one incident's detail and shows structured `external` / `silence` state; if the incident is still open or still silenced, it renders the relevant buttons for that exact incident
 - `/timeline <incident_id> [minutes]` summarizes recent audit events and likely correlated changes around one incident
 - `/promql <env> ...` returns either an instant Prometheus value or a short range summary for the selected environment
+- `/stats [env]` returns lifecycle incident stats such as open count, reopen count, average MTTA, and average MTTR for the actor's allowed project scope

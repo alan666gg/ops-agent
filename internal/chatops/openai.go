@@ -290,6 +290,20 @@ func (a Agent) toolSchemas() []responseTool {
 		},
 		{
 			Type:        "function",
+			Name:        "get_incident_stats",
+			Description: "Get lifecycle incident stats such as open count, average time to acknowledge, and average time to resolve, optionally scoped to one environment or project.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"env":     map[string]any{"type": "string"},
+					"project": map[string]any{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "list_active_incidents",
 			Description: "List active incidents, optionally scoped to one environment or project.",
 			Strict:      true,
@@ -553,6 +567,19 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 		}
 		data, err := a.OpsAPI.IncidentSummaryByProject(ctx, intFromAny(args["minutes"], 60), projects)
 		return data, "", "", err
+	case "get_incident_stats":
+		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
+		if err != nil {
+			return nil, "", "", err
+		}
+		env := stringFromAny(args["env"])
+		if env != "" {
+			if _, err := a.authorizeEnv(actor, env); err != nil {
+				return nil, env, "", err
+			}
+		}
+		data, err := a.OpsAPI.IncidentStats(ctx, env, projects)
+		return data, env, "", err
 	case "list_active_incidents":
 		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
 		if err != nil {

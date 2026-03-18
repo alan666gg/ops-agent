@@ -86,6 +86,14 @@ func TestParseCommandHealthAndRequest(t *testing.T) {
 	if cmd.Name != "promql" || cmd.Env != "prod" || cmd.Minutes != 30 || cmd.Step != time.Minute || cmd.Query != "avg(rate(http_requests_total[5m]))" {
 		t.Fatalf("unexpected promql command: %+v", cmd)
 	}
+
+	cmd, err = ParseCommand("/stats prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "stats" || cmd.Env != "prod" {
+		t.Fatalf("unexpected stats command: %+v", cmd)
+	}
 }
 
 func TestParseCommandRejectRequiresRequestID(t *testing.T) {
@@ -164,6 +172,32 @@ func TestFormatIncidentSummaryIncludesProjects(t *testing.T) {
 	})
 	if !strings.Contains(text, "projects: payments") {
 		t.Fatalf("unexpected pending text: %s", text)
+	}
+}
+
+func TestFormatIncidentStats(t *testing.T) {
+	text := FormatIncidentStats(IncidentStatsResponse{
+		Projects: []string{"core"},
+		Env:      "prod",
+		Summary: incident.Stats{
+			TotalRecords:         3,
+			OpenRecords:          1,
+			ResolvedRecords:      2,
+			AcknowledgedRecords:  1,
+			AssignedRecords:      1,
+			SilencedRecords:      0,
+			ReopenCount:          1,
+			ResolutionCount:      2,
+			AckCount:             1,
+			AvgMTTASeconds:       60,
+			AvgMTTRSeconds:       300,
+			OldestOpenAgeSeconds: 120,
+		},
+	})
+	for _, want := range []string{"incident stats", "total=3 open=1 resolved=2", "avg_mtta=60.0s avg_mttr=300.0s", "projects=core"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
 	}
 }
 

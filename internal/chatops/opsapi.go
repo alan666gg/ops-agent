@@ -49,6 +49,14 @@ type IncidentListResponse struct {
 
 type IncidentTimelineResponse = incident.Timeline
 
+type IncidentStatsResponse struct {
+	Projects []string              `json:"projects,omitempty"`
+	Env      string                `json:"env,omitempty"`
+	Source   string                `json:"source,omitempty"`
+	Summary  incident.Stats        `json:"summary"`
+	Scopes   []incident.ScopeStats `json:"scopes,omitempty"`
+}
+
 type PrometheusQueryResponse struct {
 	Project string                `json:"project,omitempty"`
 	Env     string                `json:"env"`
@@ -117,6 +125,23 @@ func (c OpsAPIClient) PrometheusQuery(ctx context.Context, env, query string, mi
 
 func (c OpsAPIClient) IncidentSummary(ctx context.Context, minutes int) (IncidentSummary, error) {
 	return c.IncidentSummaryByProject(ctx, minutes, nil)
+}
+
+func (c OpsAPIClient) IncidentStats(ctx context.Context, env string, projects []string) (IncidentStatsResponse, error) {
+	var out IncidentStatsResponse
+	q := url.Values{}
+	if strings.TrimSpace(env) != "" {
+		q.Set("env", strings.TrimSpace(env))
+	}
+	for _, project := range projects {
+		if strings.TrimSpace(project) != "" {
+			q.Add("project", strings.TrimSpace(project))
+		}
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/incidents/stats?"+q.Encode(), nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (c OpsAPIClient) IncidentSummaryByProject(ctx context.Context, minutes int, projects []string) (IncidentSummary, error) {
