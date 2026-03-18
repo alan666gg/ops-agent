@@ -48,7 +48,7 @@ API (minimal control plane):
 
 ```bash
 export OPS_API_TOKEN=change-me
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db
 ```
 
 Quick test:

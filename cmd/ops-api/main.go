@@ -23,13 +23,19 @@ import (
 	"github.com/alan666gg/ops-agent/internal/policy"
 )
 
+type approvalBackend interface {
+	Create(r approval.Request) error
+	Update(id string, update func(*approval.Request) error) (approval.Request, error)
+	ListPending(limit int) ([]approval.Request, error)
+}
+
 type server struct {
 	envFile        string
 	policyFile     string
 	auditFile      string
 	token          string
 	allowedActions map[string]bool
-	approvalStore  approval.Store
+	approvalStore  approvalBackend
 	mu             sync.Mutex
 }
 
@@ -53,6 +59,12 @@ type approveRequest struct {
 	TimeoutS  int    `json:"timeout_seconds"`
 }
 
+type rejectRequest struct {
+	RequestID string `json:"request_id"`
+	Approver  string `json:"approver"`
+	Reason    string `json:"reason"`
+}
+
 type actionResponse struct {
 	Status   string `json:"status"`
 	Message  string `json:"message"`
@@ -72,19 +84,23 @@ func main() {
 	envFile := flag.String("env-file", "configs/environments.yaml", "path to environments yaml")
 	policyFile := flag.String("policy", "configs/policies.yaml", "path to policy yaml")
 	auditFile := flag.String("audit", "audit/api.jsonl", "audit output jsonl")
-	pendingFile := flag.String("pending-file", "audit/pending-actions.json", "pending approval requests store")
+	pendingFile := flag.String("pending-file", "audit/pending-actions.db", "pending approval requests store path")
+	pendingDriver := flag.String("pending-driver", "sqlite", "pending store driver: sqlite|json")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	flag.Parse()
 
+	store, err := newApprovalBackend(*pendingDriver, *pendingFile)
+	if err != nil {
+		panic(err)
+	}
+
 	_ = os.MkdirAll("audit", 0o755)
 	s := &server{
-		envFile:    *envFile,
-		policyFile: *policyFile,
-		auditFile:  *auditFile,
-		token:      strings.TrimSpace(*token),
-		approvalStore: approval.Store{
-			Path: *pendingFile,
-		},
+		envFile:       *envFile,
+		policyFile:    *policyFile,
+		auditFile:     *auditFile,
+		token:         strings.TrimSpace(*token),
+		approvalStore: store,
 		allowedActions: map[string]bool{
 			"check_host_health":    true,
 			"check_service_health": true,
@@ -99,6 +115,7 @@ func main() {
 	mux.HandleFunc("/actions/run", s.handleRunAction)
 	mux.HandleFunc("/actions/request", s.handleRequestAction)
 	mux.HandleFunc("/actions/approve", s.handleApproveAction)
+	mux.HandleFunc("/actions/reject", s.handleRejectAction)
 	mux.HandleFunc("/actions/pending", s.handlePendingActions)
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
@@ -117,11 +134,24 @@ func main() {
 	})
 
 	fmt.Println("ops-api listening on", *addr)
+	fmt.Printf("approval store: driver=%s path=%s\n", *pendingDriver, *pendingFile)
 	if s.token == "" {
 		fmt.Println("warning: OPS API token is empty, endpoints are open (except /ready)")
 	}
 	if err := http.ListenAndServe(*addr, h); err != nil {
 		panic(err)
+	}
+}
+
+func newApprovalBackend(driver, path string) (approvalBackend, error) {
+	d := strings.ToLower(strings.TrimSpace(driver))
+	switch d {
+	case "", "sqlite":
+		return approval.SQLiteStore{Path: path}, nil
+	case "json":
+		return approval.Store{Path: path}, nil
+	default:
+		return nil, fmt.Errorf("unsupported pending-driver: %s", driver)
 	}
 }
 
@@ -205,23 +235,9 @@ func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Action) == "" {
-		http.Error(w, `{"error":"action required"}`, http.StatusBadRequest)
+	if err := s.validateActionRequest(req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
-	}
-	if !s.allowedActions[req.Action] {
-		http.Error(w, `{"error":"action not in api allowlist"}`, http.StatusBadRequest)
-		return
-	}
-	if len(req.Args) > 8 {
-		http.Error(w, `{"error":"too many args"}`, http.StatusBadRequest)
-		return
-	}
-	for _, a := range req.Args {
-		if len(a) > 300 || strings.Contains(a, "\n") {
-			http.Error(w, `{"error":"invalid arg"}`, http.StatusBadRequest)
-			return
-		}
 	}
 	if req.Actor == "" {
 		req.Actor = "ops-api"
@@ -271,12 +287,8 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Action) == "" {
-		http.Error(w, `{"error":"action required"}`, http.StatusBadRequest)
-		return
-	}
-	if !s.allowedActions[req.Action] {
-		http.Error(w, `{"error":"action not in api allowlist"}`, http.StatusBadRequest)
+	if err := s.validateActionRequest(req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
 		return
 	}
 	if req.Actor == "" {
@@ -296,16 +308,7 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 
 	rid := newID()
 	now := time.Now().UTC()
-	entry := approval.Request{
-		ID:               rid,
-		Action:           req.Action,
-		Args:             req.Args,
-		Actor:            req.Actor,
-		RequiresApproval: requiresApproval,
-		Status:           "pending",
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}
+	entry := approval.Request{ID: rid, Action: req.Action, Args: req.Args, Actor: req.Actor, RequiresApproval: requiresApproval, Status: "pending", CreatedAt: now, UpdatedAt: now}
 
 	s.mu.Lock()
 	err = s.approvalStore.Create(entry)
@@ -317,7 +320,6 @@ func (s *server) handleRequestAction(w http.ResponseWriter, r *http.Request) {
 	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: now, Actor: req.Actor, Action: req.Action, Status: "pending", Message: "action request created", RequiresOK: requiresApproval})
 
 	if !requiresApproval {
-		// auto execute for low-risk actions
 		res := runAction(req.Action, req.Args, req.TimeoutS)
 		newStatus := "executed"
 		result := strings.TrimSpace(res.Output)
@@ -403,6 +405,46 @@ func (s *server) handleApproveAction(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(actionResponse{Status: finalStatus, Message: "approval processed", ExitCode: res.ExitCode, Output: res.Output})
 }
 
+func (s *server) handleRejectAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req rejectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.RequestID) == "" {
+		http.Error(w, `{"error":"request_id required"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Approver == "" {
+		req.Approver = "ops-approver"
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		req.Reason = "rejected by approver"
+	}
+
+	s.mu.Lock()
+	entry, err := s.approvalStore.Update(req.RequestID, func(r *approval.Request) error {
+		if r.Status != "pending" {
+			return fmt.Errorf("request is not pending")
+		}
+		r.Status = "denied"
+		r.Approver = req.Approver
+		r.Result = req.Reason
+		return nil
+	})
+	s.mu.Unlock()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: req.Approver, Action: entry.Action, Status: "denied", Message: req.Reason, RequiresOK: entry.RequiresApproval})
+	_ = json.NewEncoder(w).Encode(actionResponse{Status: "denied", Message: "request rejected"})
+}
+
 func (s *server) handlePendingActions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -441,7 +483,6 @@ func (s *server) handleTailAudit(w http.ResponseWriter, r *http.Request) {
 			limit = 50
 		}
 	}
-
 	lines, err := tailLines(file, limit)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusNotFound)
@@ -487,6 +528,24 @@ func (s *server) handleIncidentSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	topTargets := topN(targetCount, 5)
 	_ = json.NewEncoder(w).Encode(incidentSummary{WindowMinutes: window, Total: total, ByStatus: byStatus, TopTargets: topTargets})
+}
+
+func (s *server) validateActionRequest(req actionRequest) error {
+	if strings.TrimSpace(req.Action) == "" {
+		return fmt.Errorf("action required")
+	}
+	if !s.allowedActions[req.Action] {
+		return fmt.Errorf("action not in api allowlist")
+	}
+	if len(req.Args) > 8 {
+		return fmt.Errorf("too many args")
+	}
+	for _, a := range req.Args {
+		if len(a) > 300 || strings.Contains(a, "\n") {
+			return fmt.Errorf("invalid arg")
+		}
+	}
+	return nil
 }
 
 func tailLines(path string, limit int) ([]string, error) {

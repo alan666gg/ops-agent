@@ -1,0 +1,74 @@
+openapi: 3.0.3
+info:
+  title: ops-agent API
+  version: 0.3.0
+servers:
+  - url: http://127.0.0.1:8090
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+security:
+  - bearerAuth: []
+paths:
+  /ready:
+    get:
+      security: []
+      summary: Readiness probe
+      responses:
+        '200':
+          description: OK
+  /health/run:
+    get:
+      summary: Run health checks for an environment
+      parameters:
+        - in: query
+          name: env
+          schema: { type: string, default: test }
+      responses:
+        '200': { description: Health results }
+  /actions/request:
+    post:
+      summary: Create action request (pending or auto-executed)
+      responses:
+        '202': { description: Accepted }
+  /actions/pending:
+    get:
+      summary: List pending approval requests
+      responses:
+        '200': { description: Pending list }
+  /actions/approve:
+    post:
+      summary: Approve and execute a pending request
+      responses:
+        '200': { description: Executed }
+  /actions/reject:
+    post:
+      summary: Reject a pending request
+      responses:
+        '200': { description: Rejected }
+  /actions/run:
+    post:
+      summary: Direct action execution (policy guarded)
+      responses:
+        '200': { description: Executed }
+  /audit/tail:
+    get:
+      summary: Tail audit log lines
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50 }
+      responses:
+        '200': { description: Tail lines }
+  /incidents/summary:
+    get:
+      summary: Incident summary in a time window
+      parameters:
+        - in: query
+          name: minutes
+          schema: { type: integer, default: 60 }
+      responses:
+        '200': { description: Summary }

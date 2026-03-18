@@ -17,5 +17,8 @@ Endpoints:
 - `POST /actions/request` (Bearer token; creates approval ticket)
 - `GET /actions/pending` (Bearer token)
 - `POST /actions/approve` (Bearer token)
+- `POST /actions/reject` (Bearer token)
 - `GET /audit/tail?limit=50` (Bearer token)
 - `GET /incidents/summary?minutes=60` (Bearer token)
+
+OpenAPI draft: `docs/openapi.yaml`
