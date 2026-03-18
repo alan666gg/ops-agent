@@ -64,7 +64,7 @@ API (minimal control plane):
 
 ```bash
 export OPS_API_TOKEN=change-me
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-webhook https://example.com/hook
 ```
 
 Quick test:
@@ -72,6 +72,9 @@ Quick test:
 ```bash
 curl -s http://127.0.0.1:8090/ready
 curl -s "http://127.0.0.1:8090/health/run?env=test" -H "Authorization: Bearer $OPS_API_TOKEN"
+
+# notify on demand for manual health runs
+curl -s "http://127.0.0.1:8090/health/run?env=prod&notify=1" -H "Authorization: Bearer $OPS_API_TOKEN"
 
 # test environment action can auto-execute
 curl -s -X POST http://127.0.0.1:8090/actions/run \
@@ -116,3 +119,9 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `GET /audit/tail` only reads `.jsonl` files inside the configured audit directory.
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
 - Environment health checks run concurrently while keeping a stable output order.
+
+## Notifications
+
+- `ops-scheduler` can send warn/fail health reports automatically with `--notify-webhook`, `--notify-slack-webhook`, or `--notify-telegram-bot-token` + `--notify-telegram-chat-id`.
+- `ops-api` supports the same notifier flags, but `/health/run` only sends when `notify=1` is present.
+- Health responses now include `summary` and `suggestions` so callers can build their own incident workflow.

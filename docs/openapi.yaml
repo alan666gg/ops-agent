@@ -34,6 +34,11 @@ paths:
         - in: query
           name: env
           schema: { type: string, default: test }
+        - in: query
+          name: notify
+          schema:
+            type: boolean
+            description: When true and a notifier is configured, send the incident summary for warn/fail results
       responses:
         '200': { description: Health results }
   /actions/request:

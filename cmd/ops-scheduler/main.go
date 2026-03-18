@@ -5,11 +5,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
+	"github.com/alan666gg/ops-agent/internal/incident"
+	"github.com/alan666gg/ops-agent/internal/notify"
+	"github.com/alan666gg/ops-agent/internal/policy"
 )
 
 func main() {
@@ -17,6 +21,12 @@ func main() {
 	envName := flag.String("env", "test", "environment name")
 	interval := flag.Duration("interval", 5*time.Minute, "check interval")
 	auditFile := flag.String("audit", "audit/scheduler.jsonl", "audit jsonl output")
+	policyFile := flag.String("policy", "configs/policies.yaml", "policy file")
+	notifyWebhook := flag.String("notify-webhook", "", "generic webhook URL for health incident notifications")
+	slackWebhook := flag.String("notify-slack-webhook", "", "Slack incoming webhook URL for health incident notifications")
+	telegramBotToken := flag.String("notify-telegram-bot-token", "", "Telegram bot token for health incident notifications")
+	telegramChatID := flag.String("notify-telegram-chat-id", "", "Telegram chat id for health incident notifications")
+	notifyMin := flag.String("notify-min-severity", "warn", "minimum health status to notify: warn|fail")
 	once := flag.Bool("once", false, "run one cycle and exit")
 	flag.Parse()
 
@@ -31,12 +41,16 @@ func main() {
 		os.Exit(1)
 	}
 	_ = os.MkdirAll("audit", 0o755)
+	notifier := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
 
 	run := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
 		results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
+		policyCfg, _ := policy.Load(*policyFile)
+		recentAutoActions, _ := audit.CountRecentAutoActions(*auditFile, *envName, time.Now().UTC().Add(-time.Hour))
+		report := incident.BuildReport("ops-scheduler", *envName, env, results, policyCfg, recentAutoActions)
 		for _, r := range results {
 			status := "ok"
 			if r.Severity == checks.SeverityWarn {
@@ -55,6 +69,27 @@ func main() {
 				Status:  status,
 				Message: r.Code + ": " + r.Message,
 			})
+		}
+		if notifier != nil && notify.ShouldNotify(report.Status, strings.ToLower(strings.TrimSpace(*notifyMin))) {
+			if err := notifier.Notify(ctx, report); err != nil {
+				_ = audit.AppendJSONL(*auditFile, audit.Event{
+					Time:    time.Now().UTC(),
+					Actor:   "ops-scheduler",
+					Action:  "notify",
+					Env:     *envName,
+					Status:  "failed",
+					Message: err.Error(),
+				})
+			} else {
+				_ = audit.AppendJSONL(*auditFile, audit.Event{
+					Time:    time.Now().UTC(),
+					Actor:   "ops-scheduler",
+					Action:  "notify",
+					Env:     *envName,
+					Status:  "ok",
+					Message: report.Summary,
+				})
+			}
 		}
 	}
 

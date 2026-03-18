@@ -22,6 +22,8 @@ import (
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
 	rbexec "github.com/alan666gg/ops-agent/internal/exec"
+	"github.com/alan666gg/ops-agent/internal/incident"
+	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
 )
 
@@ -41,6 +43,8 @@ type server struct {
 	approvalStore approvalBackend
 	metrics       *apiMetrics
 	limiter       *rateLimiter
+	notifier      notify.Notifier
+	notifyMin     string
 	mu            sync.Mutex
 }
 
@@ -155,6 +159,11 @@ func main() {
 	pendingTTL := flag.Duration("pending-ttl", 24*time.Hour, "expire pending requests older than this duration (0 to disable)")
 	rateLimitWindow := flag.Duration("rate-limit-window", time.Minute, "rate limit window")
 	rateLimitMax := flag.Int("rate-limit-max", 120, "max requests per client per window")
+	notifyWebhook := flag.String("notify-webhook", "", "generic webhook URL for health incident notifications")
+	slackWebhook := flag.String("notify-slack-webhook", "", "Slack incoming webhook URL for health incident notifications")
+	telegramBotToken := flag.String("notify-telegram-bot-token", "", "Telegram bot token for health incident notifications")
+	telegramChatID := flag.String("notify-telegram-chat-id", "", "Telegram chat id for health incident notifications")
+	notifyMin := flag.String("notify-min-severity", "warn", "minimum health status to notify: warn|fail")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	flag.Parse()
 
@@ -171,6 +180,8 @@ func main() {
 		token:         strings.TrimSpace(*token),
 		approvalStore: store,
 		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
+		notifier:      notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID),
+		notifyMin:     strings.ToLower(strings.TrimSpace(*notifyMin)),
 		metrics: &apiMetrics{
 			requestsTotal:    map[string]int64{},
 			errorsTotal:      map[string]int64{},
@@ -282,6 +293,9 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	results := checks.NewRegistry(checks.CheckersForEnvironment(env)...).RunAll(ctx)
+	policyCfg, _ := policy.Load(s.policyFile)
+	recentAutoActions, _ := audit.CountRecentAutoActions(s.auditFile, envName, time.Now().UTC().Add(-time.Hour))
+	report := incident.BuildReport("ops-api", envName, env, results, policyCfg, recentAutoActions)
 
 	status := "ok"
 	for _, rs := range results {
@@ -293,8 +307,15 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "health_run", Env: envName, Target: envName + "/" + rs.Name, Status: sev, Message: rs.Code + ": " + rs.Message})
 	}
+	if s.notifier != nil && truthy(r.URL.Query().Get("notify")) && notify.ShouldNotify(report.Status, s.notifyMin) {
+		if err := s.notifier.Notify(r.Context(), report); err != nil {
+			_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Env: envName, Status: "failed", Message: err.Error()})
+		} else {
+			_ = audit.AppendJSONL(s.auditFile, audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "notify", Env: envName, Status: "ok", Message: report.Summary})
+		}
+	}
 
-	_ = json.NewEncoder(w).Encode(map[string]any{"env": envName, "status": status, "results": results})
+	_ = json.NewEncoder(w).Encode(map[string]any{"env": envName, "status": status, "results": results, "suggestions": report.Suggestions, "summary": report.Summary})
 }
 
 func (s *server) handleRunAction(w http.ResponseWriter, r *http.Request) {
@@ -897,6 +918,15 @@ func newID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return "req_" + hex.EncodeToString(b)
+}
+
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func runAction(action string, args []string, timeoutS int, host *config.Host) rbexec.Result {

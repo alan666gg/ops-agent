@@ -8,6 +8,7 @@
 - Runbooks execute locally by default and can be sent over SSH to a configured environment host.
 - Environment health checks cover local agent basics, configured host SSH reachability, service endpoints, and dependencies.
 - Policy evaluation can deny an action when its runbook content matches a configured forbidden command token.
+- Health incidents can be summarized into action suggestions and sent through webhook, Slack, or Telegram notifiers.
 
 Flow:
 1. detect issue
