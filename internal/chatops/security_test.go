@@ -36,6 +36,9 @@ max_input_chars: 100
 	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "health", Env: "prod"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "timeline", IncidentID: "ops-scheduler|payments|prod"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "approve", RequestID: "r1"}); err == nil {
 		t.Fatal("expected viewer approve to be denied")
 	}
@@ -50,6 +53,12 @@ max_input_chars: 100
 	}
 	if err := auth.AuthorizeProject("tg:@operator", "search"); err == nil {
 		t.Fatal("expected project-level denial")
+	}
+	if err := auth.AuthorizeCallback("tg:@viewer", "incident_timeline:ops-scheduler|payments|prod"); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AuthorizeTool("tg:@viewer", "get_incident_timeline", map[string]any{"incident_id": "ops-scheduler|payments|prod"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

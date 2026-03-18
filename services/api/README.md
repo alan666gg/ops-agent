@@ -25,6 +25,7 @@ Endpoints:
 - `GET /incidents/summary?minutes=60` (Bearer token)
 - `GET /incidents/active?project=core&env=prod` (Bearer token)
 - `GET /incidents/get?id=<incident_id>` (Bearer token)
+- `GET /incidents/timeline?id=<incident_id>&minutes=90` (Bearer token)
 - `POST /incidents/ack` (Bearer token)
 - `POST /incidents/assign` (Bearer token)
 
@@ -36,7 +37,8 @@ If `target_host` is provided, the API resolves that host from the selected envir
 If a service declares `host`, the response can suppress downstream service symptoms when that host is already the active root cause.
 If a service declares `slo`, the response can also include synthetic `slo_availability_*` results based on recent audit history.
 If the API is started with notifier flags, `/health/run?...&notify=1` also sends the incident summary when the status is `warn` or `fail`.
-`--incident-state-file` persists active incident state, acknowledgement, owner, and notes; the same store powers `/incidents/active`, `/incidents/get`, `/incidents/ack`, and `/incidents/assign`.
+`--incident-state-file` persists active incident state, acknowledgement, owner, and notes; the same store powers `/incidents/active`, `/incidents/get`, `/incidents/timeline`, `/incidents/ack`, and `/incidents/assign`.
 Acknowledged incidents suppress duplicate notify repeats until the fingerprint changes again.
+`GET /incidents/timeline` correlates recent audit events around one incident and highlights likely change events, such as deploy/runbook actions shortly before the incident first appeared.
 `--notify-config` replaces direct notifier flags with a routed notification policy that supports named receivers, silences, and maintenance windows.
 `--notify-trigger-after` and `--notify-recovery-after` help suppress flapping by requiring consecutive unhealthy or healthy samples before opening or closing an incident.

@@ -1,9 +1,16 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/alan666gg/ops-agent/internal/audit"
+	"github.com/alan666gg/ops-agent/internal/incident"
 )
 
 func TestResolveAuditFile(t *testing.T) {
@@ -106,4 +113,56 @@ func TestResolveTargetHost(t *testing.T) {
 			t.Fatal("expected missing target host error")
 		}
 	})
+}
+
+func TestHandleIncidentTimeline(t *testing.T) {
+	now := time.Now().UTC()
+	auditFile := filepath.Join(t.TempDir(), "audit.jsonl")
+	store := &incident.MemoryStore{}
+	record, err := store.SyncReport(incident.Report{
+		Source:      "ops-scheduler",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "api unhealthy",
+		Fingerprint: "fp1",
+		FailCount:   1,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, evt := range []audit.Event{
+		{Time: now.Add(-10 * time.Minute), Actor: "tg:@ops", Action: "restart_container", Project: "core", Env: "prod", TargetHost: "app-1", Status: "ok", Message: "manual restart"},
+		{Time: now.Add(-5 * time.Minute), Actor: "ops-scheduler", Action: "health_run", Project: "core", Env: "prod", Target: "prod/service_api", Status: "failed", Message: "HTTP_DOWN: connection refused"},
+	} {
+		if err := audit.AppendJSONL(auditFile, evt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := &server{
+		auditStore:    audit.JSONLStore{Path: auditFile},
+		incidentStore: store,
+	}
+	req := httptest.NewRequest(http.MethodGet, "/incidents/timeline?id="+record.ID+"&minutes=60", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleIncidentTimeline(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var got incident.Timeline
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Incident.ID != record.ID || got.WindowMinutes != 60 {
+		t.Fatalf("unexpected timeline response: %+v", got)
+	}
+	if len(got.Entries) != 2 {
+		t.Fatalf("expected 2 timeline entries, got %+v", got.Entries)
+	}
+	if len(got.CorrelatedChanges) != 1 || got.CorrelatedChanges[0].Action != "restart_container" {
+		t.Fatalf("unexpected correlated changes: %+v", got.CorrelatedChanges)
+	}
 }

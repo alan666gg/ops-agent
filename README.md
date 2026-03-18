@@ -139,6 +139,7 @@ Telegram commands:
 /incidents 60
 /active prod
 /incident <incident_id>
+/timeline <incident_id> 90
 /ack <incident_id> taking ownership
 /assign <incident_id> alice on it
 /pending
@@ -205,6 +206,7 @@ curl -s "http://127.0.0.1:8090/audit/tail?file=api.jsonl&limit=20" -H "Authoriza
 curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60&project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/active?project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/get?id=ops-scheduler|core|prod" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s "http://127.0.0.1:8090/incidents/timeline?id=ops-scheduler|core|prod&minutes=90" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s -X POST http://127.0.0.1:8090/incidents/ack \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $OPS_API_TOKEN" \
@@ -253,6 +255,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - Slash commands and approval buttons always work without any LLM.
 - `/pending` now includes `View / Approve / Reject` inline buttons, and high-risk LLM actions expose `Confirm / Cancel` buttons as a safer alternative to free-text confirmation.
 - `/active`, `/incident`, `/ack`, and `/assign` turn Telegram into a real incident room: responders can see what is currently open, acknowledge it, and claim ownership without leaving chat.
+- `/timeline <incident_id> [minutes]` and the inline `Timeline` button let responders inspect what changed shortly before an incident opened, including likely correlated deploy/runbook changes.
 - If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.
 - The LLM is a planner only: it can read health/incidents/pending requests and submit approve/reject/request actions through `ops-api`, so policy, approval, audit, and execution still stay in `ops-api` + `ops-worker`.
 - `/requests [status]` and `/show <request_id>` make request detail lookup explicit, so operators and the LLM can inspect a concrete request before approving or rejecting it.

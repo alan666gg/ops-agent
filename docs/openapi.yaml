@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ops-agent API
-  version: 0.3.0
+  version: 0.3.1
 servers:
   - url: http://127.0.0.1:8090
 components:
@@ -190,3 +190,81 @@ paths:
           schema: { type: integer, default: 60 }
       responses:
         '200': { description: Summary }
+  /incidents/active:
+    get:
+      summary: List active incidents
+      parameters:
+        - in: query
+          name: project
+          schema: { type: string }
+        - in: query
+          name: env
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50 }
+      responses:
+        '200': { description: Active incident list }
+  /incidents/get:
+    get:
+      summary: Get one incident by incident_id
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Incident detail }
+  /incidents/timeline:
+    get:
+      summary: Get the incident timeline and likely correlated changes
+      parameters:
+        - in: query
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: minutes
+          schema: { type: integer, default: 90 }
+      responses:
+        '200': { description: Incident timeline }
+  /incidents/ack:
+    post:
+      summary: Acknowledge one incident
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                actor:
+                  type: string
+                note:
+                  type: string
+      responses:
+        '200': { description: Incident acknowledged }
+  /incidents/assign:
+    post:
+      summary: Assign one incident owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, owner]
+              properties:
+                id:
+                  type: string
+                owner:
+                  type: string
+                actor:
+                  type: string
+                note:
+                  type: string
+      responses:
+        '200': { description: Incident assigned }

@@ -46,6 +46,8 @@ type IncidentListResponse struct {
 	Items []incident.Record `json:"items"`
 }
 
+type IncidentTimelineResponse = incident.Timeline
+
 type PendingResponse struct {
 	Count int                `json:"count"`
 	Items []approval.Request `json:"items"`
@@ -135,6 +137,17 @@ func (c OpsAPIClient) GetIncident(ctx context.Context, id string) (incident.Reco
 	q := url.Values{}
 	q.Set("id", strings.TrimSpace(id))
 	if err := c.doJSON(ctx, http.MethodGet, "/incidents/get?"+q.Encode(), nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c OpsAPIClient) GetIncidentTimeline(ctx context.Context, id string, minutes int) (IncidentTimelineResponse, error) {
+	var out IncidentTimelineResponse
+	q := url.Values{}
+	q.Set("id", strings.TrimSpace(id))
+	q.Set("minutes", fmt.Sprintf("%d", minutes))
+	if err := c.doJSON(ctx, http.MethodGet, "/incidents/timeline?"+q.Encode(), nil, &out); err != nil {
 		return out, err
 	}
 	return out, nil

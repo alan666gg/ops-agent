@@ -49,6 +49,20 @@ func ParseCommand(text string) (Command, error) {
 		}
 		out.IncidentID = fields[1]
 		return out, nil
+	case "timeline":
+		out.Minutes = 90
+		if len(fields) < 2 {
+			return Command{}, fmt.Errorf("usage: /timeline <incident_id> [minutes]")
+		}
+		out.IncidentID = fields[1]
+		if len(fields) > 2 {
+			v, err := strconv.Atoi(fields[2])
+			if err != nil || v <= 0 {
+				return Command{}, fmt.Errorf("minutes must be a positive integer")
+			}
+			out.Minutes = v
+		}
+		return out, nil
 	case "show":
 		if len(fields) < 2 {
 			return Command{}, fmt.Errorf("usage: /show <request_id>")
@@ -143,6 +157,7 @@ func HelpText() string {
 		"/pending",
 		"/active [env]",
 		"/incident <incident_id>",
+		"/timeline <incident_id> [minutes]",
 		"/requests [status]",
 		"/show <request_id>",
 		"/ack <incident_id> [note]",
@@ -309,6 +324,35 @@ func FormatIncidentDetail(item incident.Record) string {
 	return strings.Join(lines, "\n")
 }
 
+func FormatIncidentTimeline(timeline incident.Timeline) string {
+	lines := []string{
+		fmt.Sprintf("timeline %s last %d minutes", timeline.Incident.ID, timeline.WindowMinutes),
+		fmt.Sprintf("- status=%s", timeline.Incident.Status),
+		fmt.Sprintf("- project=%s", defaultString(timeline.Incident.Project, "default")),
+		fmt.Sprintf("- env=%s", defaultString(timeline.Incident.Env, "test")),
+	}
+	for i, item := range timeline.CorrelatedChanges {
+		if i >= 3 {
+			lines = append(lines, fmt.Sprintf("- correlated changes ... and %d more", len(timeline.CorrelatedChanges)-i))
+			break
+		}
+		lines = append(lines, "- correlated "+formatTimelineEntry(item))
+	}
+	if len(timeline.Entries) == 0 {
+		lines = append(lines, "- no audit events found in this window")
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, "- events:")
+	for i, item := range timeline.Entries {
+		if i >= 12 {
+			lines = append(lines, fmt.Sprintf("... and %d more events", len(timeline.Entries)-i))
+			break
+		}
+		lines = append(lines, "  "+formatTimelineEntry(item))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func FormatActionDetail(item approval.Request) string {
 	lines := []string{
 		fmt.Sprintf("request %s", item.ID),
@@ -361,6 +405,32 @@ func FormatPendingItem(item approval.Request) string {
 		line += " actor=" + item.Actor
 	}
 	return line
+}
+
+func formatTimelineEntry(item incident.TimelineEntry) string {
+	parts := []string{item.Time.UTC().Format("15:04"), item.Kind}
+	if strings.TrimSpace(item.Action) != "" {
+		parts = append(parts, item.Action)
+	}
+	if strings.TrimSpace(item.Status) != "" {
+		parts = append(parts, "["+item.Status+"]")
+	}
+	if strings.TrimSpace(item.Actor) != "" {
+		parts = append(parts, "by="+item.Actor)
+	}
+	if strings.TrimSpace(item.TargetHost) != "" {
+		parts = append(parts, "host="+item.TargetHost)
+	}
+	if strings.TrimSpace(item.Target) != "" {
+		parts = append(parts, "target="+trimForChat(item.Target, 60))
+	}
+	if strings.TrimSpace(item.Message) != "" {
+		parts = append(parts, trimForChat(item.Message, 90))
+	}
+	if item.LikelyChange {
+		parts = append(parts, "likely_change")
+	}
+	return strings.Join(parts, " ")
 }
 
 func trimForChat(v string, limit int) string {

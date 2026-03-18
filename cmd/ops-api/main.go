@@ -276,6 +276,7 @@ func main() {
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
 	mux.HandleFunc("/incidents/active", s.handleActiveIncidents)
 	mux.HandleFunc("/incidents/get", s.handleGetIncident)
+	mux.HandleFunc("/incidents/timeline", s.handleIncidentTimeline)
 	mux.HandleFunc("/incidents/ack", s.handleAckIncident)
 	mux.HandleFunc("/incidents/assign", s.handleAssignIncident)
 	mux.HandleFunc("/metrics", s.handleMetrics)
@@ -933,6 +934,48 @@ func (s *server) handleGetIncident(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(item)
+}
+
+func (s *server) handleIncidentTimeline(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if s.auditStore == nil {
+		http.Error(w, `{"error":"audit store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		http.Error(w, `{"error":"id required"}`, http.StatusBadRequest)
+		return
+	}
+	window := 90
+	if v := r.URL.Query().Get("minutes"); v != "" {
+		fmt.Sscanf(v, "%d", &window)
+		if window <= 0 || window > 24*60 {
+			window = 90
+		}
+	}
+	item, ok, err := s.incidentStore.Get(id)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, `{"error":"incident not found"}`, http.StatusNotFound)
+		return
+	}
+	timeline, err := (incident.TimelineBuilder{Store: s.auditStore}).Build(item, time.Duration(window)*time.Minute)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(timeline)
 }
 
 func (s *server) handleAckIncident(w http.ResponseWriter, r *http.Request) {

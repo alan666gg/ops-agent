@@ -250,6 +250,15 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 			return "incident detail denied: " + err.Error(), nil
 		}
 		return chatops.FormatIncidentDetail(item), chatops.IncidentMarkup(item)
+	case "timeline":
+		item, err := api.GetIncidentTimeline(ctx, cmd.IncidentID, cmd.Minutes)
+		if err != nil {
+			return "incident timeline failed: " + err.Error(), nil
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Incident.Project); err != nil {
+			return "incident timeline denied: " + err.Error(), nil
+		}
+		return chatops.FormatIncidentTimeline(item), chatops.IncidentMarkup(item.Incident)
 	case "pending":
 		projects, err := agent.Authorizer.AllowedProjects(actor)
 		if err != nil {
@@ -379,6 +388,16 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 			return "", nil, err
 		}
 		return chatops.FormatIncidentDetail(item), chatops.IncidentMarkup(item), nil
+	case strings.HasPrefix(data, "incident_timeline:"):
+		id := strings.TrimPrefix(data, "incident_timeline:")
+		item, err := api.GetIncidentTimeline(ctx, id, 90)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := agent.Authorizer.AuthorizeProject(actor, item.Incident.Project); err != nil {
+			return "", nil, err
+		}
+		return chatops.FormatIncidentTimeline(item), chatops.IncidentMarkup(item.Incident), nil
 	case strings.HasPrefix(data, "incident_ack:"):
 		id := strings.TrimPrefix(data, "incident_ack:")
 		item, err := api.GetIncident(ctx, id)

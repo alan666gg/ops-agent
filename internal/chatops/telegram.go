@@ -242,13 +242,16 @@ func IncidentListMarkup(items []incident.Record) any {
 	if len(items) == 0 {
 		return nil
 	}
-	rows := make([][]inlineButton, 0, len(items))
+	rows := make([][]inlineButton, 0, len(items)*2)
 	for i, item := range items {
 		if i >= 5 {
 			break
 		}
 		rows = append(rows, []inlineButton{
 			{Text: "View " + item.Env, CallbackData: "incident_show:" + item.ID},
+			{Text: "Timeline", CallbackData: "incident_timeline:" + item.ID},
+		})
+		rows = append(rows, []inlineButton{
 			{Text: "Ack", CallbackData: "incident_ack:" + item.ID},
 			{Text: "Claim", CallbackData: "incident_assign:" + item.ID},
 		})
@@ -264,6 +267,9 @@ func IncidentMarkup(item incident.Record) any {
 		return nil
 	}
 	return replyMarkup{InlineKeyboard: [][]inlineButton{
+		{
+			{Text: "Timeline", CallbackData: "incident_timeline:" + item.ID},
+		},
 		{
 			{Text: "Ack", CallbackData: "incident_ack:" + item.ID},
 			{Text: "Claim", CallbackData: "incident_assign:" + item.ID},

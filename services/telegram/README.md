@@ -36,6 +36,7 @@ Supported commands:
 - `/incidents [minutes]`
 - `/active [env]`
 - `/incident <incident_id>`
+- `/timeline <incident_id> [minutes]`
 - `/ack <incident_id> [note]`
 - `/assign <incident_id> <owner> [note]`
 - `/pending`
@@ -60,7 +61,8 @@ Natural-language examples:
 Interaction notes:
 
 - `/pending` now renders `View / Approve / Reject` buttons for each visible request
-- `/active` now renders `View / Ack / Claim` buttons for each visible incident
+- `/active` now renders `View / Timeline / Ack / Claim` buttons for each visible incident
 - High-risk LLM-created operations render `Confirm / Cancel` buttons backed by the same pending confirmation store as the text replies
 - `/show <request_id>` returns one request's full detail and, if it is still pending, renders approve/reject buttons for that exact request
-- `/incident <incident_id>` returns one incident's detail and, if it is still open, renders ack/claim buttons for that exact incident
+- `/incident <incident_id>` returns one incident's detail and, if it is still open, renders timeline/ack/claim buttons for that exact incident
+- `/timeline <incident_id> [minutes]` summarizes recent audit events and likely correlated changes around one incident

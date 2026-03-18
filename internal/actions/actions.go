@@ -84,3 +84,11 @@ func ValidateArgs(name string, args []string) error {
 	}
 	return nil
 }
+
+func IsMutating(name string) bool {
+	spec, ok := Lookup(name)
+	if !ok {
+		return false
+	}
+	return !strings.HasPrefix(spec.Name, "check_")
+}

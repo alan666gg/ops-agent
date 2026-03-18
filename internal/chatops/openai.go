@@ -303,6 +303,21 @@ func (a Agent) toolSchemas() []responseTool {
 		},
 		{
 			Type:        "function",
+			Name:        "get_incident_timeline",
+			Description: "Get the incident timeline and likely correlated changes for one incident_id over a recent window in minutes.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"incident_id": map[string]any{"type": "string"},
+					"minutes":     map[string]any{"type": "integer", "minimum": 1, "maximum": 1440},
+				},
+				"required":             []string{"incident_id"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "list_pending",
 			Description: "List pending approval requests.",
 			Strict:      true,
@@ -518,6 +533,14 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 			}
 		}
 		return data, data.Env, "", err
+	case "get_incident_timeline":
+		data, err := a.OpsAPI.GetIncidentTimeline(ctx, stringFromAny(args["incident_id"]), intFromAny(args["minutes"], 90))
+		if err == nil {
+			if authErr := a.Authorizer.AuthorizeProject(actor, data.Incident.Project); authErr != nil {
+				return nil, data.Incident.Env, "", authErr
+			}
+		}
+		return data, data.Incident.Env, "", err
 	case "list_pending":
 		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
 		if err != nil {

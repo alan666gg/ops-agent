@@ -24,6 +24,12 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 			return jsonResponse(http.StatusOK, IncidentListResponse{Count: 1, Items: []incident.Record{{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"}}}), nil
 		case "/incidents/get":
 			return jsonResponse(http.StatusOK, incident.Record{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"}), nil
+		case "/incidents/timeline":
+			return jsonResponse(http.StatusOK, IncidentTimelineResponse{
+				Incident:      incident.Record{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"},
+				WindowMinutes: 90,
+				Entries:       []incident.TimelineEntry{{Kind: "signal", Action: "health_run", Status: "failed"}},
+			}), nil
 		case "/actions/get":
 			return jsonResponse(http.StatusOK, approval.Request{ID: "r1", Action: "restart_container", Status: "pending"}), nil
 		case "/actions/list":
@@ -73,6 +79,13 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 	}
 	if incidentItem.ID == "" || incidentItem.Project != "core" {
 		t.Fatalf("unexpected incident detail response: %+v", incidentItem)
+	}
+	timeline, err := api.GetIncidentTimeline(context.Background(), "ops-scheduler|core|prod", 90)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if timeline.WindowMinutes != 90 || timeline.Incident.Project != "core" || len(timeline.Entries) != 1 {
+		t.Fatalf("unexpected incident timeline response: %+v", timeline)
 	}
 
 	resp, err := api.Approve(context.Background(), "r1", "tg:@ops", 30)

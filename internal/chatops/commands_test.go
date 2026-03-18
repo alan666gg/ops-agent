@@ -3,6 +3,7 @@ package chatops
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alan666gg/ops-agent/internal/approval"
 	"github.com/alan666gg/ops-agent/internal/checks"
@@ -59,6 +60,14 @@ func TestParseCommandHealthAndRequest(t *testing.T) {
 	}
 	if cmd.Name != "assign" || cmd.IncidentID != "ops-scheduler|core|prod" || cmd.Owner != "alice" {
 		t.Fatalf("unexpected assign command: %+v", cmd)
+	}
+
+	cmd, err = ParseCommand("/timeline ops-scheduler|core|prod 120")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "timeline" || cmd.IncidentID != "ops-scheduler|core|prod" || cmd.Minutes != 120 {
+		t.Fatalf("unexpected timeline command: %+v", cmd)
 	}
 }
 
@@ -152,6 +161,25 @@ func TestFormatIncidentDetail(t *testing.T) {
 	}
 }
 
+func TestFormatIncidentTimeline(t *testing.T) {
+	text := FormatIncidentTimeline(incident.Timeline{
+		Incident:      incident.Record{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"},
+		WindowMinutes: 90,
+		CorrelatedChanges: []incident.TimelineEntry{
+			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "restart_container", Status: "ok", Actor: "tg:@ops", TargetHost: "app-1", LikelyChange: true},
+		},
+		Entries: []incident.TimelineEntry{
+			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "restart_container", Status: "ok", Actor: "tg:@ops", TargetHost: "app-1", LikelyChange: true},
+			{Time: stringsToTime(t, "2026-03-18T10:05:00Z"), Kind: "signal", Action: "health_run", Status: "failed", Message: "HTTP_DOWN: connection refused"},
+		},
+	})
+	for _, want := range []string{"timeline ops-scheduler|core|prod last 90 minutes", "correlated 10:00 change restart_container", "events:", "10:05 signal health_run"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+}
+
 func TestFormatActionDetail(t *testing.T) {
 	text := FormatActionDetail(approval.Request{
 		ID:         "r1",
@@ -167,4 +195,13 @@ func TestFormatActionDetail(t *testing.T) {
 			t.Fatalf("expected %q in %q", want, text)
 		}
 	}
+}
+
+func stringsToTime(t *testing.T, v string) time.Time {
+	t.Helper()
+	got, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
 }
