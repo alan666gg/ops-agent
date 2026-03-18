@@ -31,6 +31,7 @@ type SuppressedCheck struct {
 
 type Report struct {
 	Source           string            `json:"source"`
+	Key              string            `json:"key,omitempty"`
 	Project          string            `json:"project,omitempty"`
 	Env              string            `json:"env"`
 	Status           string            `json:"status"`

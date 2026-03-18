@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -215,6 +216,63 @@ func TestHandlePrometheusQuery(t *testing.T) {
 	}
 	if got.Project != "core" || got.Env != "prod" || got.Data.ResultType != "matrix" || len(got.Data.Series) != 1 {
 		t.Fatalf("unexpected prometheus query response: %+v", got)
+	}
+}
+
+func TestHandleAlertmanagerWebhook(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "environments.yaml")
+	content := `environments:
+  prod:
+    project: core
+    hosts: []
+    services: []
+    dependencies: []
+`
+	if err := os.WriteFile(envFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	auditFile := filepath.Join(dir, "audit.jsonl")
+	s := &server{
+		envFile:       envFile,
+		auditStore:    audit.JSONLStore{Path: auditFile},
+		incidentStore: &incident.MemoryStore{},
+	}
+	body := `{
+	  "receiver": "ops-bot",
+	  "commonLabels": {"env":"prod","severity":"critical"},
+	  "commonAnnotations": {"summary":"API error rate too high"},
+	  "alerts": [
+	    {"status":"firing","fingerprint":"fp-1","labels":{"alertname":"HighErrorRate","instance":"api-1:9090"},"annotations":{"description":"5xx ratio > 5%"}, "startsAt":"2026-03-18T10:00:00Z"},
+	    {"status":"firing","fingerprint":"fp-2","labels":{"alertname":"LatencyHigh","severity":"warning","instance":"api-2:9090"},"annotations":{"summary":"latency p95 > 1s"}, "startsAt":"2026-03-18T10:01:00Z"}
+	  ]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/alerts/alertmanager", bytes.NewBufferString(body))
+	rr := httptest.NewRecorder()
+
+	s.handleAlertmanagerWebhook(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp alertmanagerIngestResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 2 || len(resp.Items) != 2 {
+		t.Fatalf("unexpected ingest response: %+v", resp)
+	}
+	if resp.Items[0].Source != "alertmanager" || resp.Items[0].Project != "core" || !resp.Items[0].Open {
+		t.Fatalf("unexpected first item: %+v", resp.Items[0])
+	}
+	if resp.Items[0].ID == resp.Items[1].ID {
+		t.Fatalf("expected distinct ids, got %+v", resp.Items)
+	}
+	events, err := audit.RecentEvents(auditFile, audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Action != "alertmanager_receive" {
+		t.Fatalf("unexpected audit events: %+v", events)
 	}
 }
 

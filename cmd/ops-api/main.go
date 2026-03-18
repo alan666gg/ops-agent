@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/alan666gg/ops-agent/internal/actions"
+	"github.com/alan666gg/ops-agent/internal/alerting"
 	"github.com/alan666gg/ops-agent/internal/approval"
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/checks"
@@ -46,6 +47,7 @@ type server struct {
 	auditStore    audit.Store
 	incidentStore incident.Store
 	token         string
+	alertToken    string
 	approvalStore approvalBackend
 	metrics       *apiMetrics
 	limiter       *rateLimiter
@@ -167,6 +169,12 @@ type incidentActionRequest struct {
 	Note  string `json:"note,omitempty"`
 }
 
+type alertmanagerIngestResponse struct {
+	Status string            `json:"status"`
+	Count  int               `json:"count"`
+	Items  []incident.Record `json:"items,omitempty"`
+}
+
 func main() {
 	addr := flag.String("addr", ":8090", "http listen addr")
 	envFile := flag.String("env-file", "configs/environments.yaml", "path to environments yaml")
@@ -191,6 +199,7 @@ func main() {
 	notifyRecoveryAfter := flag.Int("notify-recovery-after", 1, "close an incident only after this many consecutive healthy cycles")
 	notifyConfigFile := flag.String("notify-config", "", "notification routing config file (replaces direct notifier flags)")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
+	alertToken := flag.String("alert-token", os.Getenv("OPS_ALERT_TOKEN"), "dedicated bearer/shared token for /alerts/alertmanager (or OPS_ALERT_TOKEN env)")
 	flag.Parse()
 	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
 		fmt.Println(err)
@@ -242,6 +251,7 @@ func main() {
 		auditStore:    auditStore,
 		incidentStore: incidentStore,
 		token:         strings.TrimSpace(*token),
+		alertToken:    strings.TrimSpace(*alertToken),
 		approvalStore: store,
 		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
 		notifyCtl: notify.NewController(notifierImpl, notify.NewSQLiteStore(*notifyStateFile), notify.ControllerOptions{
@@ -278,6 +288,7 @@ func main() {
 	mux.HandleFunc("/actions/get", s.handleGetAction)
 	mux.HandleFunc("/actions/list", s.handleListActions)
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
+	mux.HandleFunc("/alerts/alertmanager", s.handleAlertmanagerWebhook)
 	mux.HandleFunc("/prometheus/query", s.handlePrometheusQuery)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
 	mux.HandleFunc("/incidents/active", s.handleActiveIncidents)
@@ -304,7 +315,7 @@ func main() {
 			return
 		}
 
-		if r.URL.Path != "/ready" && r.URL.Path != "/metrics" && !s.authorized(r) {
+		if r.URL.Path != "/ready" && r.URL.Path != "/metrics" && !s.authorizedPath(r) {
 			sw.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(sw).Encode(map[string]any{"error": "unauthorized", "request_id": reqID})
 			s.metricsRecord(r.URL.Path, sw.status, time.Since(start))
@@ -343,6 +354,27 @@ func (s *server) authorized(r *http.Request) bool {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == s.token
+	}
+	return false
+}
+
+func (s *server) authorizedPath(r *http.Request) bool {
+	if r.URL.Path == "/alerts/alertmanager" {
+		return s.authorizedAlert(r) || s.authorized(r)
+	}
+	return s.authorized(r)
+}
+
+func (s *server) authorizedAlert(r *http.Request) bool {
+	if s.alertToken == "" {
+		return false
+	}
+	if got := strings.TrimSpace(r.Header.Get("X-Ops-Alert-Token")); got != "" {
+		return got == s.alertToken
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == s.alertToken
 	}
 	return false
 }
@@ -849,6 +881,62 @@ func (s *server) handleTailAudit(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"driver": s.auditStore.Driver(), "file": resolvedFile, "count": len(lines), "lines": lines})
 }
 
+func (s *server) handleAlertmanagerWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var payload alerting.AlertmanagerWebhook
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err := dec.Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if len(payload.Alerts) == 0 {
+		http.Error(w, `{"error":"alerts required"}`, http.StatusBadRequest)
+		return
+	}
+	now := time.Now().UTC()
+	items := make([]incident.Record, 0, len(payload.Alerts))
+	for _, report := range payload.Reports(now, s.projectForAlertEnv) {
+		record, err := s.syncIncident(report)
+		if err != nil {
+			_ = s.auditStore.Append(audit.Event{
+				Time:    now,
+				Actor:   "alertmanager",
+				Action:  "alertmanager_receive",
+				Project: report.Project,
+				Env:     report.Env,
+				Target:  report.Source + "|" + report.Key,
+				Status:  "failed",
+				Message: err.Error(),
+			})
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+		items = append(items, record)
+		_ = s.auditStore.Append(audit.Event{
+			Time:    now,
+			Actor:   "alertmanager",
+			Action:  "alertmanager_receive",
+			Project: report.Project,
+			Env:     report.Env,
+			Target:  record.ID,
+			Status:  report.Status,
+			Message: report.Summary,
+		})
+	}
+	_ = json.NewEncoder(w).Encode(alertmanagerIngestResponse{
+		Status: "ok",
+		Count:  len(items),
+		Items:  items,
+	})
+}
+
 func (s *server) handleIncidentSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1238,6 +1326,17 @@ func (s *server) projectForEnv(envName string) (string, error) {
 		return "", fmt.Errorf("env not found: %s", envName)
 	}
 	return cfg.ProjectForEnv(envName), nil
+}
+
+func (s *server) projectForAlertEnv(envName string) string {
+	cfg, err := config.LoadEnvironments(s.envFile)
+	if err != nil {
+		return "default"
+	}
+	if _, ok := cfg.Environment(envName); !ok {
+		return "default"
+	}
+	return cfg.ProjectForEnv(envName)
 }
 
 func (s *server) syncIncident(report incident.Report) (incident.Record, error) {

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ops-agent API
-  version: 0.3.2
+  version: 0.3.3
 servers:
   - url: http://127.0.0.1:8090
 components:
@@ -61,6 +61,52 @@ paths:
           schema: { type: string, description: Optional range step duration such as 60s or 5m }
       responses:
         '200': { description: Prometheus query result }
+  /alerts/alertmanager:
+    post:
+      summary: Ingest Alertmanager webhook alerts into the incident lifecycle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [alerts]
+              properties:
+                receiver:
+                  type: string
+                status:
+                  type: string
+                commonLabels:
+                  type: object
+                  additionalProperties: { type: string }
+                commonAnnotations:
+                  type: object
+                  additionalProperties: { type: string }
+                alerts:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      status:
+                        type: string
+                      fingerprint:
+                        type: string
+                      startsAt:
+                        type: string
+                        format: date-time
+                      endsAt:
+                        type: string
+                        format: date-time
+                      generatorURL:
+                        type: string
+                      labels:
+                        type: object
+                        additionalProperties: { type: string }
+                      annotations:
+                        type: object
+                        additionalProperties: { type: string }
+      responses:
+        '200': { description: Alertmanager alerts ingested }
   /actions/request:
     post:
       summary: Create action request (pending or auto-executed)

@@ -10,6 +10,7 @@ import (
 type Record struct {
 	ID              string    `json:"id"`
 	Source          string    `json:"source"`
+	Key             string    `json:"key,omitempty"`
 	Project         string    `json:"project,omitempty"`
 	Env             string    `json:"env"`
 	Status          string    `json:"status"`
@@ -131,11 +132,15 @@ func (m *MemoryStore) Assign(id, owner, actor, note string, now time.Time) (Reco
 }
 
 func recordID(report Report) string {
-	return strings.Join([]string{
+	parts := []string{
 		strings.TrimSpace(report.Source),
 		defaultProject(report.Project),
 		strings.TrimSpace(report.Env),
-	}, "|")
+	}
+	if key := strings.TrimSpace(report.Key); key != "" {
+		parts = append(parts, key)
+	}
+	return strings.Join(parts, "|")
 }
 
 func syncRecord(prev Record, ok bool, report Report, now time.Time) Record {
@@ -146,12 +151,14 @@ func syncRecord(prev Record, ok bool, report Report, now time.Time) Record {
 		next = Record{
 			ID:          recordID(report),
 			Source:      strings.TrimSpace(report.Source),
+			Key:         strings.TrimSpace(report.Key),
 			Project:     defaultProject(report.Project),
 			Env:         strings.TrimSpace(report.Env),
 			FirstSeenAt: now,
 		}
 	}
 	next.Source = strings.TrimSpace(report.Source)
+	next.Key = strings.TrimSpace(report.Key)
 	next.Project = defaultProject(report.Project)
 	next.Env = strings.TrimSpace(report.Env)
 	next.Status = strings.TrimSpace(report.Status)

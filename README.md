@@ -120,9 +120,23 @@ API (minimal control plane):
 
 ```bash
 export OPS_API_TOKEN=change-me
+export OPS_ALERT_TOKEN=change-me-alerts
 go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2
 # recommended for larger history windows and incident summaries
 go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --pending-driver sqlite --pending-file audit/pending-actions.db
+```
+
+Alertmanager webhook ingestion:
+
+```yaml
+receivers:
+  - name: ops-agent
+    webhook_configs:
+      - url: http://ops-agent.internal:8090/alerts/alertmanager
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: change-me-alerts
 ```
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
@@ -182,6 +196,10 @@ curl -s http://127.0.0.1:8090/ready
 curl -s "http://127.0.0.1:8090/health/run?env=test" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/prometheus/query?env=test&query=up" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/prometheus/query?env=prod&query=avg(rate(http_requests_total%5B5m%5D))&minutes=30&step=60s" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s -X POST "http://127.0.0.1:8090/alerts/alertmanager" \
+  -H "Authorization: Bearer $OPS_ALERT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"receiver":"ops-agent","commonLabels":{"env":"prod","severity":"critical"},"alerts":[{"status":"firing","fingerprint":"fp-1","labels":{"alertname":"HighErrorRate","instance":"api-1:9090"},"annotations":{"summary":"api 5xx ratio too high"},"startsAt":"2026-03-18T10:00:00Z"}]}'
 
 # notify on demand for manual health runs
 curl -s "http://127.0.0.1:8090/health/run?env=prod&notify=1" -H "Authorization: Bearer $OPS_API_TOKEN"
@@ -248,6 +266,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `environments.<env>.project` adds a first-class project boundary; actions, incident summaries, and Telegram access control can now be scoped by project.
 - `audit-driver sqlite` + `incident-state-file` upgrades the control plane from append-only logs to a queryable state model with active incidents, acknowledgements, and ownership.
 - `environments.<env>.prometheus` lets the control plane read that environment's Prometheus as an external observability source without giving the bot write access.
+- `/alerts/alertmanager` lets external Alertmanager alerts join the same incident lifecycle; a dedicated `OPS_ALERT_TOKEN` keeps that webhook isolated from the main operator API token.
 - Environment health checks run concurrently while keeping a stable output order.
 - `services[].host` lets the incident layer relate service failures back to a declared host for root-cause suppression.
 - `services[].slo` lets the incident layer evaluate availability burn rate over short/long windows using recent `health_run` / `health_cycle` history.

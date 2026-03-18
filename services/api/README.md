@@ -6,6 +6,7 @@ Run:
 
 ```bash
 export OPS_API_TOKEN=change-me
+export OPS_ALERT_TOKEN=change-me-alerts
 go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2
 ```
 
@@ -15,6 +16,7 @@ Endpoints:
 - `GET /metrics` (no token, Prometheus text format)
 - `GET /health/run?env=test` (Bearer token)
 - `GET /prometheus/query?env=prod&query=up` (Bearer token)
+- `POST /alerts/alertmanager` (Bearer token from `OPS_ALERT_TOKEN` or the main API token)
 - `POST /actions/run` (Bearer token; direct mode; request body supports `env` and optional `target_host`)
 - `POST /actions/request` (Bearer token; creates approval ticket; request body supports `env` and optional `target_host`)
 - `GET /actions/pending` (Bearer token)
@@ -34,6 +36,7 @@ OpenAPI draft: `docs/openapi.yaml`
 
 If `target_host` is provided, the API resolves that host from the selected environment and runs the runbook over SSH.
 If the selected environment declares `prometheus.base_url`, `GET /prometheus/query` proxies read-only PromQL queries through that environment's Prometheus.
+`POST /alerts/alertmanager` accepts Alertmanager webhook payloads and turns each external alert into an incident record, so external Prometheus alerts share the same acknowledge/assign timeline as native bot incidents.
 
 `GET /health/run` includes local host basics, configured host SSH reachability, service health URLs, and dependency checks for the selected environment.
 If a service declares `host`, the response can suppress downstream service symptoms when that host is already the active root cause.
@@ -43,5 +46,6 @@ If the API is started with notifier flags, `/health/run?...&notify=1` also sends
 Acknowledged incidents suppress duplicate notify repeats until the fingerprint changes again.
 `GET /incidents/timeline` correlates recent audit events around one incident and highlights likely change events, such as deploy/runbook actions shortly before the incident first appeared.
 `GET /prometheus/query` supports instant queries by default, or range queries when `minutes` is set. `step` is optional and defaults to an auto-selected resolution.
+For Alertmanager, use a dedicated `OPS_ALERT_TOKEN` so webhook senders do not need the broader operator API token.
 `--notify-config` replaces direct notifier flags with a routed notification policy that supports named receivers, silences, and maintenance windows.
 `--notify-trigger-after` and `--notify-recovery-after` help suppress flapping by requiring consecutive unhealthy or healthy samples before opening or closing an incident.

@@ -121,7 +121,7 @@ func timelineEntry(evt audit.Event, record Record) TimelineEntry {
 func classifyEvent(evt audit.Event) string {
 	actionName := strings.TrimSpace(evt.Action)
 	switch actionName {
-	case "health_cycle", "health_run", "slo_eval":
+	case "health_cycle", "health_run", "slo_eval", "alertmanager_receive":
 		return "signal"
 	case "incident_ack", "incident_assign", "incident_sync":
 		return "incident"

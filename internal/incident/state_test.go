@@ -77,3 +77,26 @@ func TestSQLiteStoreListOpenAndAssign(t *testing.T) {
 		t.Fatalf("expected recovered incident to leave open list, got %+v", items)
 	}
 }
+
+func TestMemoryStoreAllowsMultipleKeysPerSourceEnv(t *testing.T) {
+	store := &MemoryStore{}
+	now := time.Now().UTC()
+	a, err := store.SyncReport(Report{Source: "alertmanager", Key: "fp-1", Project: "core", Env: "prod", Status: "fail", Summary: "api error rate", Fingerprint: "fp-1", FailCount: 1}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.SyncReport(Report{Source: "alertmanager", Key: "fp-2", Project: "core", Env: "prod", Status: "warn", Summary: "latency high", Fingerprint: "fp-2", WarnCount: 1}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID == b.ID {
+		t.Fatalf("expected distinct incident ids, got %q and %q", a.ID, b.ID)
+	}
+	items, err := store.List(Filter{Projects: []string{"core"}, OpenOnly: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected two open incidents, got %+v", items)
+	}
+}
