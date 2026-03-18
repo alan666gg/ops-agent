@@ -29,9 +29,19 @@ func main() {
 	notifyStateFile := flag.String("notify-state-file", "audit/notify-state.db", "notification dedupe state sqlite file")
 	notifyRepeat := flag.Duration("notify-repeat", 30*time.Minute, "repeat identical incident notifications after this interval")
 	notifyRecovery := flag.Bool("notify-recovery", true, "send notification when an incident recovers below the notify threshold")
+	notifyTriggerAfter := flag.Int("notify-trigger-after", 1, "open an incident only after this many consecutive unhealthy cycles")
+	notifyRecoveryAfter := flag.Int("notify-recovery-after", 1, "close an incident only after this many consecutive healthy cycles")
 	once := flag.Bool("once", false, "run one cycle and exit")
 	flag.Parse()
 	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	if err := notify.ValidateThreshold("notify-trigger-after", *notifyTriggerAfter); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	if err := notify.ValidateThreshold("notify-recovery-after", *notifyRecoveryAfter); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
@@ -48,7 +58,13 @@ func main() {
 	}
 	_ = os.MkdirAll("audit", 0o755)
 	notifier := notify.Build(*notifyWebhook, *slackWebhook, *telegramBotToken, *telegramChatID)
-	notifyCtl := notify.NewController(notifier, notify.NewSQLiteStore(*notifyStateFile), *notifyMin, *notifyRepeat, *notifyRecovery)
+	notifyCtl := notify.NewController(notifier, notify.NewSQLiteStore(*notifyStateFile), notify.ControllerOptions{
+		MinSeverity:    *notifyMin,
+		RepeatInterval: *notifyRepeat,
+		NotifyRecovery: *notifyRecovery,
+		TriggerAfter:   *notifyTriggerAfter,
+		RecoveryAfter:  *notifyRecoveryAfter,
+	})
 
 	run := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

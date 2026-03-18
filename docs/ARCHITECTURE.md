@@ -9,6 +9,7 @@
 - Environment health checks cover local agent basics, configured host SSH reachability, service endpoints, and dependencies.
 - Policy evaluation can deny an action when its runbook content matches a configured forbidden command token.
 - Health incidents can be summarized into action suggestions and sent through webhook, Slack, or Telegram notifiers.
+- Notification state is persisted so duplicate incidents, flapping checks, and recoveries can be handled with consecutive-sample thresholds.
 
 Flow:
 1. detect issue

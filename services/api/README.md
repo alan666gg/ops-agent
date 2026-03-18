@@ -6,7 +6,7 @@ Run:
 
 ```bash
 export OPS_API_TOKEN=change-me
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --notify-slack-webhook https://hooks.slack.com/services/...
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --notify-slack-webhook https://hooks.slack.com/services/... --notify-trigger-after 2 --notify-recovery-after 2
 ```
 
 Endpoints:
@@ -29,3 +29,4 @@ If `target_host` is provided, the API resolves that host from the selected envir
 
 `GET /health/run` includes local host basics, configured host SSH reachability, service health URLs, and dependency checks for the selected environment.
 If the API is started with notifier flags, `/health/run?...&notify=1` also sends the incident summary when the status is `warn` or `fail`.
+`--notify-trigger-after` and `--notify-recovery-after` help suppress flapping by requiring consecutive unhealthy or healthy samples before opening or closing an incident.

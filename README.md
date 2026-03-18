@@ -64,7 +64,7 @@ API (minimal control plane):
 
 ```bash
 export OPS_API_TOKEN=change-me
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-webhook https://example.com/hook
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.jsonl --pending-driver sqlite --pending-file audit/pending-actions.db --pending-ttl 24h --rate-limit-window 1m --rate-limit-max 120 --notify-webhook https://example.com/hook --notify-trigger-after 2 --notify-recovery-after 2
 ```
 
 Quick test:
@@ -124,4 +124,5 @@ curl -s "http://127.0.0.1:8090/metrics"
 
 - `ops-scheduler` can send warn/fail health reports automatically with `--notify-webhook`, `--notify-slack-webhook`, or `--notify-telegram-bot-token` + `--notify-telegram-chat-id`.
 - `ops-api` supports the same notifier flags, but `/health/run` only sends when `notify=1` is present.
+- `--notify-trigger-after` and `--notify-recovery-after` let you suppress flapping by requiring consecutive unhealthy or healthy cycles before opening or closing an incident.
 - Health responses now include `summary` and `suggestions` so callers can build their own incident workflow.

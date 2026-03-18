@@ -15,7 +15,17 @@ type Controller struct {
 	MinSeverity    string
 	RepeatInterval time.Duration
 	NotifyRecovery bool
+	TriggerAfter   int
+	RecoveryAfter  int
 	Now            func() time.Time
+}
+
+type ControllerOptions struct {
+	MinSeverity    string
+	RepeatInterval time.Duration
+	NotifyRecovery bool
+	TriggerAfter   int
+	RecoveryAfter  int
 }
 
 type Decision struct {
@@ -37,21 +47,9 @@ func (c Controller) Process(ctx context.Context, report incident.Report) (Decisi
 		return Decision{}, err
 	}
 
-	send, reason := c.shouldSend(report, prev, ok, now)
-	next := State{
-		Key:             key,
-		LastStatus:      report.Status,
-		LastFingerprint: report.Fingerprint,
-		LastNotifiedAt:  prev.LastNotifiedAt,
-		LastChangedAt:   prev.LastChangedAt,
-	}
-	if !ok {
-		next.LastChangedAt = now
-	}
-	if !ok || prev.LastStatus != report.Status || prev.LastFingerprint != report.Fingerprint {
-		next.LastChangedAt = now
-	}
-	if send {
+	next, decision := c.decide(report, prev, ok, now)
+	next.Key = key
+	if decision.Send {
 		if err := c.Notifier.Notify(ctx, report); err != nil {
 			return Decision{}, err
 		}
@@ -60,40 +58,100 @@ func (c Controller) Process(ctx context.Context, report incident.Report) (Decisi
 	if err := c.Store.Put(next); err != nil {
 		return Decision{}, err
 	}
-	return Decision{Send: send, Reason: reason}, nil
+	return decision, nil
 }
 
-func (c Controller) shouldSend(report incident.Report, prev State, ok bool, now time.Time) (bool, string) {
+func (c Controller) decide(report incident.Report, prev State, ok bool, now time.Time) (State, Decision) {
 	currentRank := severityRank(report.Status)
 	minRank := severityRankOrDefault(c.MinSeverity, "warn")
-	if currentRank < minRank {
-		if ok && severityRank(prev.LastStatus) >= minRank && c.NotifyRecovery {
-			return true, "recovery"
+	triggerAfter := thresholdOrDefault(c.TriggerAfter)
+	recoveryAfter := thresholdOrDefault(c.RecoveryAfter)
+
+	next := State{
+		Key:             prev.Key,
+		LastStatus:      report.Status,
+		LastFingerprint: report.Fingerprint,
+		LastNotifiedAt:  prev.LastNotifiedAt,
+		LastChangedAt:   prev.LastChangedAt,
+		Open:            prev.Open,
+		OpenStatus:      prev.OpenStatus,
+		OpenFingerprint: prev.OpenFingerprint,
+		FailureStreak:   prev.FailureStreak,
+		RecoveryStreak:  prev.RecoveryStreak,
+	}
+	if !ok || prev.LastStatus != report.Status || prev.LastFingerprint != report.Fingerprint {
+		next.LastChangedAt = now
+	}
+
+	if currentRank >= minRank {
+		next.FailureStreak = prev.FailureStreak + 1
+		next.RecoveryStreak = 0
+
+		if !prev.Open {
+			if next.FailureStreak < triggerAfter {
+				next.Open = false
+				next.OpenStatus = ""
+				next.OpenFingerprint = ""
+				return next, Decision{Send: false, Reason: fmt.Sprintf("awaiting trigger threshold (%d/%d)", next.FailureStreak, triggerAfter)}
+			}
+			next.Open = true
+			next.OpenStatus = report.Status
+			next.OpenFingerprint = report.Fingerprint
+			if triggerAfter > 1 {
+				return next, Decision{Send: true, Reason: "trigger threshold reached"}
+			}
+			return next, Decision{Send: true, Reason: "new incident"}
 		}
-		return false, "below threshold"
+		next.Open = true
+		next.OpenStatus = report.Status
+		next.OpenFingerprint = report.Fingerprint
+		if currentRank > severityRank(prev.OpenStatus) {
+			return next, Decision{Send: true, Reason: "severity escalated"}
+		}
+		if strings.TrimSpace(prev.OpenFingerprint) != strings.TrimSpace(report.Fingerprint) {
+			return next, Decision{Send: true, Reason: "incident changed"}
+		}
+		if c.RepeatInterval > 0 && !prev.LastNotifiedAt.IsZero() && now.Sub(prev.LastNotifiedAt) >= c.RepeatInterval {
+			return next, Decision{Send: true, Reason: "repeat interval reached"}
+		}
+		return next, Decision{Send: false, Reason: "duplicate suppressed"}
 	}
-	if !ok || severityRank(prev.LastStatus) < minRank {
-		return true, "new incident"
+
+	next.FailureStreak = 0
+	if !prev.Open {
+		next.Open = false
+		next.OpenStatus = ""
+		next.OpenFingerprint = ""
+		next.RecoveryStreak = 0
+		return next, Decision{Send: false, Reason: "below threshold"}
 	}
-	if currentRank > severityRank(prev.LastStatus) {
-		return true, "severity escalated"
+
+	next.Open = true
+	next.OpenStatus = prev.OpenStatus
+	next.OpenFingerprint = prev.OpenFingerprint
+	next.RecoveryStreak = prev.RecoveryStreak + 1
+	if next.RecoveryStreak < recoveryAfter {
+		return next, Decision{Send: false, Reason: fmt.Sprintf("awaiting recovery confirmation (%d/%d)", next.RecoveryStreak, recoveryAfter)}
 	}
-	if strings.TrimSpace(prev.LastFingerprint) != strings.TrimSpace(report.Fingerprint) {
-		return true, "incident changed"
+	next.Open = false
+	next.OpenStatus = ""
+	next.OpenFingerprint = ""
+	next.RecoveryStreak = 0
+	if c.NotifyRecovery {
+		return next, Decision{Send: true, Reason: "recovery"}
 	}
-	if c.RepeatInterval > 0 && now.Sub(prev.LastNotifiedAt) >= c.RepeatInterval {
-		return true, "repeat interval reached"
-	}
-	return false, "duplicate suppressed"
+	return next, Decision{Send: false, Reason: "recovery suppressed"}
 }
 
-func NewController(notifier Notifier, store Store, minSeverity string, repeat time.Duration, notifyRecovery bool) Controller {
+func NewController(notifier Notifier, store Store, opts ControllerOptions) Controller {
 	return Controller{
 		Notifier:       notifier,
 		Store:          store,
-		MinSeverity:    strings.ToLower(strings.TrimSpace(minSeverity)),
-		RepeatInterval: repeat,
-		NotifyRecovery: notifyRecovery,
+		MinSeverity:    strings.ToLower(strings.TrimSpace(opts.MinSeverity)),
+		RepeatInterval: opts.RepeatInterval,
+		NotifyRecovery: opts.NotifyRecovery,
+		TriggerAfter:   thresholdOrDefault(opts.TriggerAfter),
+		RecoveryAfter:  thresholdOrDefault(opts.RecoveryAfter),
 	}
 }
 
@@ -118,4 +176,18 @@ func ValidateMinSeverity(v string) error {
 	default:
 		return fmt.Errorf("invalid notify severity: %s", v)
 	}
+}
+
+func ValidateThreshold(name string, v int) error {
+	if v < 1 {
+		return fmt.Errorf("%s must be >= 1", name)
+	}
+	return nil
+}
+
+func thresholdOrDefault(v int) int {
+	if v < 1 {
+		return 1
+	}
+	return v
 }

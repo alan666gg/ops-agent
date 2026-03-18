@@ -8,6 +8,11 @@ type State struct {
 	LastFingerprint string
 	LastNotifiedAt  time.Time
 	LastChangedAt   time.Time
+	Open            bool
+	OpenStatus      string
+	OpenFingerprint string
+	FailureStreak   int
+	RecoveryStreak  int
 }
 
 type Store interface {
