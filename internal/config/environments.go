@@ -45,15 +45,24 @@ type HostChecks struct {
 }
 
 type Service struct {
-	Name           string     `yaml:"name"`
-	Host           string     `yaml:"host,omitempty"`
-	Type           string     `yaml:"type"`
-	ContainerName  string     `yaml:"container_name"`
-	SystemdUnit    string     `yaml:"systemd_unit,omitempty"`
-	ProcessName    string     `yaml:"process_name,omitempty"`
-	ListenerPort   int        `yaml:"listener_port,omitempty"`
-	HealthcheckURL string     `yaml:"healthcheck_url"`
-	SLO            ServiceSLO `yaml:"slo"`
+	Name           string        `yaml:"name"`
+	Host           string        `yaml:"host,omitempty"`
+	Type           string        `yaml:"type"`
+	ContainerName  string        `yaml:"container_name"`
+	SystemdUnit    string        `yaml:"systemd_unit,omitempty"`
+	ProcessName    string        `yaml:"process_name,omitempty"`
+	ListenerPort   int           `yaml:"listener_port,omitempty"`
+	HealthcheckURL string        `yaml:"healthcheck_url"`
+	Checks         ServiceChecks `yaml:"checks,omitempty"`
+	SLO            ServiceSLO    `yaml:"slo"`
+}
+
+type ServiceChecks struct {
+	RestartWarnCount  int           `yaml:"restart_warn_count,omitempty"`
+	RestartFailCount  int           `yaml:"restart_fail_count,omitempty"`
+	RestartFlapWindow time.Duration `yaml:"restart_flap_window,omitempty"`
+	JournalWindow     time.Duration `yaml:"journal_window,omitempty"`
+	JournalLines      int           `yaml:"journal_lines,omitempty"`
 }
 
 type ServiceSLO struct {
@@ -195,6 +204,9 @@ func (e Environment) Validate(envName string) error {
 				return fmt.Errorf("environment %q service %q has invalid healthcheck_url %q", envName, svc.Name, rawURL)
 			}
 		}
+		if err := svc.Checks.Validate(envName, svc); err != nil {
+			return err
+		}
 		if err := svc.SLO.Validate(envName, svc); err != nil {
 			return err
 		}
@@ -239,6 +251,50 @@ func (e Environment) HostByEndpoint(endpoint string) (Host, bool) {
 
 func (s ServiceSLO) Enabled() bool {
 	return s.AvailabilityTarget > 0
+}
+
+func (s ServiceChecks) WithDefaults(svc Service) ServiceChecks {
+	if strings.EqualFold(strings.TrimSpace(svc.Type), "container") {
+		if s.RestartWarnCount <= 0 {
+			s.RestartWarnCount = 2
+		}
+		if s.RestartFailCount <= 0 {
+			s.RestartFailCount = 5
+		}
+		if s.RestartFlapWindow <= 0 {
+			s.RestartFlapWindow = 15 * time.Minute
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") {
+		if s.JournalWindow <= 0 {
+			s.JournalWindow = 30 * time.Minute
+		}
+		if s.JournalLines <= 0 {
+			s.JournalLines = 3
+		}
+	}
+	return s
+}
+
+func (s ServiceChecks) Validate(envName string, svc Service) error {
+	s = s.WithDefaults(svc)
+	if strings.EqualFold(strings.TrimSpace(svc.Type), "container") {
+		if s.RestartWarnCount <= 0 || s.RestartFailCount <= 0 || s.RestartWarnCount >= s.RestartFailCount {
+			return fmt.Errorf("environment %q service %q has invalid restart thresholds", envName, svc.Name)
+		}
+		if s.RestartFlapWindow <= 0 {
+			return fmt.Errorf("environment %q service %q restart_flap_window must be > 0", envName, svc.Name)
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") {
+		if s.JournalWindow <= 0 {
+			return fmt.Errorf("environment %q service %q journal_window must be > 0", envName, svc.Name)
+		}
+		if s.JournalLines <= 0 {
+			return fmt.Errorf("environment %q service %q journal_lines must be > 0", envName, svc.Name)
+		}
+	}
+	return nil
 }
 
 func (h HostChecks) WithDefaults() HostChecks {

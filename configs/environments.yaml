@@ -21,6 +21,10 @@ environments:
         type: container
         container_name: cicdtest-app
         healthcheck_url: http://127.0.0.1:8080/
+        checks:
+          restart_warn_count: 2
+          restart_fail_count: 5
+          restart_flap_window: 15m
         slo:
           availability_target: 99.9
           page_short_window: 5m

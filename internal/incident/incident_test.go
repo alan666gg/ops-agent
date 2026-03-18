@@ -102,3 +102,32 @@ func TestBuildReportSuppressesDownstreamChecksByHostFailure(t *testing.T) {
 		t.Fatalf("expected suppression context in summary, got %q", report.Summary)
 	}
 }
+
+func TestBuildSuggestionsForContainerRuntimeFailure(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{
+			{Name: "app-1", Host: "10.0.0.5"},
+		},
+		Services: []config.Service{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api-1", HealthcheckURL: "http://10.0.0.5:8080/healthz"},
+		},
+	}
+	results := []checks.Result{
+		{Name: "service_runtime_api", Code: "CONTAINER_FLAPPING", Severity: checks.SeverityFail, Message: "restart_count=6 exceeds fail threshold=5"},
+	}
+	policyCfg := policy.Config{}
+	policyCfg.Policies.AutoActions.Allowed = []string{"check_service_health"}
+	policyCfg.Policies.AutoActions.RequireApproval = []string{"restart_container"}
+
+	report := BuildReport("ops-scheduler", "prod", env, results, policyCfg, 0)
+	if len(report.Suggestions) != 2 {
+		t.Fatalf("expected 2 suggestions, got %#v", report.Suggestions)
+	}
+	found := map[string]bool{}
+	for _, item := range report.Suggestions {
+		found[item.Action] = true
+	}
+	if !found["check_service_health"] || !found["restart_container"] {
+		t.Fatalf("missing expected suggestions: %#v", report.Suggestions)
+	}
+}

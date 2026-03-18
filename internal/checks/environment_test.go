@@ -15,7 +15,7 @@ func TestCheckersForEnvironmentIncludesHostsServicesAndDependencies(t *testing.T
 			{Name: "app-2", Host: "10.0.0.6"},
 		},
 		Services: []config.Service{
-			{Name: "api", HealthcheckURL: "http://127.0.0.1:8080/healthz"},
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api", HealthcheckURL: "http://127.0.0.1:8080/healthz"},
 			{Name: "redis", Host: "app-1", Type: "systemd", SystemdUnit: "redis-server.service", ListenerPort: 6379},
 			{Name: "worker", Host: "app-2", Type: "systemd", SystemdUnit: "worker.service"},
 		},
@@ -26,8 +26,8 @@ func TestCheckersForEnvironmentIncludesHostsServicesAndDependencies(t *testing.T
 	}
 
 	items := CheckersForEnvironment(env)
-	if len(items) != 11 {
-		t.Fatalf("expected 11 checks, got %d", len(items))
+	if len(items) != 14 {
+		t.Fatalf("expected 14 checks, got %d", len(items))
 	}
 
 	names := make([]string, 0, len(items))
@@ -43,8 +43,11 @@ func TestCheckersForEnvironmentIncludesHostsServicesAndDependencies(t *testing.T
 		"host_resource_app_2":                true,
 		"host_process_app_1":                 true,
 		"service_api":                        true,
+		"service_runtime_api":                true,
 		"service_redis":                      true,
+		"service_logs_redis":                 true,
 		"service_worker":                     true,
+		"service_logs_worker":                true,
 		"dependency_tcp_127_0_0_1_6379":      true,
 		"dependency_http_example_com_health": true,
 	}

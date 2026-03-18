@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadEnvironmentsValidatesDuplicates(t *testing.T) {
@@ -64,6 +65,10 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
         type: container
         container_name: app-api
         healthcheck_url: http://127.0.0.1:8080/healthz
+        checks:
+          restart_warn_count: 2
+          restart_fail_count: 5
+          restart_flap_window: 15m
         slo:
           availability_target: 99.9
           page_short_window: 5m
@@ -92,6 +97,10 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	hostChecks := cfg.Environments["test"].Hosts[0].Checks.WithDefaults()
 	if hostChecks.LoadWarnPerCPU != 1.5 || hostChecks.MemoryFailPercent != 95 || len(hostChecks.RequiredProcesses) != 1 {
 		t.Fatalf("unexpected host check defaults: %+v", hostChecks)
+	}
+	serviceChecks := cfg.Environments["test"].Services[0].Checks.WithDefaults(cfg.Environments["test"].Services[0])
+	if serviceChecks.RestartWarnCount != 2 || serviceChecks.RestartFailCount != 5 || serviceChecks.RestartFlapWindow != 15*time.Minute {
+		t.Fatalf("unexpected service check config: %+v", serviceChecks)
 	}
 }
 
@@ -167,6 +176,39 @@ func TestLoadEnvironmentsRejectsInvalidHostChecks(t *testing.T) {
 	_, err := LoadEnvironments(path)
 	if err == nil {
 		t.Fatal("expected invalid host checks validation error")
+	}
+}
+
+func TestLoadEnvironmentsRejectsInvalidServiceChecks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+    services:
+      - name: api
+        host: app-1
+        type: container
+        container_name: api
+        checks:
+          restart_warn_count: 5
+          restart_fail_count: 2
+      - name: worker
+        host: app-1
+        type: systemd
+        systemd_unit: worker.service
+        checks:
+          journal_lines: 0
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadEnvironments(path)
+	if err == nil {
+		t.Fatal("expected invalid service checks validation error")
 	}
 }
 
@@ -280,6 +322,11 @@ func TestSaveEnvironmentsRoundTrip(t *testing.T) {
 						ContainerName:  "api",
 						ListenerPort:   8080,
 						HealthcheckURL: "http://10.0.0.5:8080/healthz",
+						Checks: ServiceChecks{
+							RestartWarnCount:  2,
+							RestartFailCount:  5,
+							RestartFlapWindow: 15 * time.Minute,
+						},
 					},
 					{
 						Name:         "nginx",
@@ -288,6 +335,10 @@ func TestSaveEnvironmentsRoundTrip(t *testing.T) {
 						SystemdUnit:  "nginx.service",
 						ProcessName:  "nginx",
 						ListenerPort: 80,
+						Checks: ServiceChecks{
+							JournalWindow: 15 * time.Minute,
+							JournalLines:  2,
+						},
 					},
 				},
 			},
@@ -300,7 +351,7 @@ func TestSaveEnvironmentsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(output.Environments["prod"].Services) != 2 || output.Environments["prod"].Services[1].SystemdUnit != "nginx.service" {
+	if len(output.Environments["prod"].Services) != 2 || output.Environments["prod"].Services[1].SystemdUnit != "nginx.service" || output.Environments["prod"].Services[0].Checks.RestartWarnCount != 2 {
 		t.Fatalf("unexpected output: %+v", output)
 	}
 }

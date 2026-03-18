@@ -9,8 +9,9 @@ go run ./cmd/ops-scheduler --env test --env-file configs/environments.yaml --pol
 go run ./cmd/ops-scheduler --env prod --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/scheduler.jsonl --discover-interval 6h --discover-timeout 20s --discover-probe-timeout 1500ms
 ```
 
-Each cycle checks local host basics plus the selected environment's configured hosts, host resource thresholds, optional host process watchlists, service endpoints, and dependencies.
+Each cycle checks local host basics plus the selected environment's configured hosts, host resource thresholds, optional host process watchlists, service endpoints, container restart/flap signals, systemd recent error summaries, and dependencies.
 Host resource thresholds live under `hosts[].checks` and default to per-cpu load, memory, disk, and inode thresholds if omitted.
+Service runtime/log thresholds live under `services[].checks`; containers default to restart-count/flap thresholds and systemd services default to a 30-minute `journalctl -p err` scan.
 If `--discover-interval` is set, the scheduler also runs the SSH-based discovery/apply flow on that lower cadence before health checks. That flow can auto-enroll Docker containers, matched systemd services, and safe standalone listeners into `configs/environments.yaml`.
 If you prefer manual inventory control, leave `--discover-interval=0` and run `go run ./cmd/ops-agent discover ... --apply` on demand; the scheduler still reloads `configs/environments.yaml` on every cycle, so newly discovered services become part of the next health run without restarting the scheduler.
 When an auto-applied service has no confirmed HTTP health endpoint, the scheduler falls back to TCP checks for discovered ports or `systemctl is-active` checks for systemd-only services.

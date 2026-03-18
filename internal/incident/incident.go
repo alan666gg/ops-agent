@@ -116,6 +116,14 @@ func BuildSuppressions(env config.Environment, results []checks.Result) map[stri
 			SuppressedBy: root.SuppressedBy,
 			Reason:       fmt.Sprintf("service depends on host %s reachability", host.Name),
 		}
+		out["service_runtime_"+sanitizeName(svc.Name)] = suppression{
+			SuppressedBy: root.SuppressedBy,
+			Reason:       fmt.Sprintf("service runtime checks depend on host %s reachability", host.Name),
+		}
+		out["service_logs_"+sanitizeName(svc.Name)] = suppression{
+			SuppressedBy: root.SuppressedBy,
+			Reason:       fmt.Sprintf("service log checks depend on host %s reachability", host.Name),
+		}
 	}
 
 	for _, host := range env.Hosts {
@@ -154,7 +162,10 @@ func BuildSuggestions(envName string, env config.Environment, results []checks.R
 	depByKey := map[string]string{}
 
 	for _, svc := range env.Services {
-		serviceByKey["service_"+sanitizeName(svc.Name)] = svc
+		suffix := sanitizeName(svc.Name)
+		serviceByKey["service_"+suffix] = svc
+		serviceByKey["service_runtime_"+suffix] = svc
+		serviceByKey["service_logs_"+suffix] = svc
 	}
 	for _, host := range env.Hosts {
 		suffix := sanitizeName(host.Name)

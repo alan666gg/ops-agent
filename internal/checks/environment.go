@@ -39,30 +39,41 @@ func CheckersForEnvironment(env config.Environment) []Checker {
 	}
 
 	for _, svc := range env.Services {
+		serviceName := "service_" + sanitizeName(svc.Name)
+		serviceChecks := svc.Checks.WithDefaults(svc)
+		host, hasHost := hostsByName[strings.TrimSpace(svc.Host)]
 		if rawURL := strings.TrimSpace(svc.HealthcheckURL); rawURL != "" {
 			items = append(items, HTTPChecker{
-				NameLabel: "service_" + sanitizeName(svc.Name),
+				NameLabel: serviceName,
 				TargetURL: rawURL,
 			})
-			continue
-		}
-		host, ok := hostsByName[strings.TrimSpace(svc.Host)]
-		if !ok {
-			continue
-		}
-		if svc.ListenerPort > 0 {
+		} else if hasHost && svc.ListenerPort > 0 {
 			items = append(items, TCPChecker{
-				NameLabel: "service_" + sanitizeName(svc.Name),
+				NameLabel: serviceName,
 				Host:      host.Host,
 				Port:      strconv.Itoa(svc.ListenerPort),
 			})
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") && strings.TrimSpace(svc.SystemdUnit) != "" {
+		} else if hasHost && strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") && strings.TrimSpace(svc.SystemdUnit) != "" {
 			items = append(items, SystemdUnitChecker{
-				NameLabel: "service_" + sanitizeName(svc.Name),
+				NameLabel: serviceName,
 				Host:      host,
 				Unit:      svc.SystemdUnit,
+			})
+		}
+		if hasHost && strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) != "" {
+			items = append(items, ContainerRuntimeChecker{
+				NameLabel:     "service_runtime_" + sanitizeName(svc.Name),
+				Host:          host,
+				ContainerName: svc.ContainerName,
+				Checks:        serviceChecks,
+			})
+		}
+		if hasHost && strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") && strings.TrimSpace(svc.SystemdUnit) != "" {
+			items = append(items, SystemdJournalChecker{
+				NameLabel: "service_logs_" + sanitizeName(svc.Name),
+				Host:      host,
+				Unit:      svc.SystemdUnit,
+				Checks:    serviceChecks,
 			})
 		}
 	}
