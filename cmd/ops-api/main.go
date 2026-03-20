@@ -654,7 +654,10 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	policyCfg, _ := policy.Load(s.policyFile)
 	recentAutoActions, _ := s.auditStore.CountRecentAutoActions(project, envName, time.Now().UTC().Add(-time.Hour))
-	report := incident.BuildReport("ops-api", envName, env, results, policyCfg, recentAutoActions)
+	recentChanges, _ := incident.RecentChanges(s.auditStore, project, envName, 2*time.Hour, 5)
+	report := incident.BuildReportWithContext("ops-api", envName, env, results, policyCfg, recentAutoActions, incident.ReportContext{
+		RecentChanges: recentChanges,
+	})
 	record, err := s.syncIncident(report)
 	if err != nil {
 		_ = s.auditStore.Append(audit.Event{Time: time.Now().UTC(), Actor: "ops-api", Action: "incident_sync", Project: project, Env: envName, Status: "failed", Message: err.Error()})
@@ -688,6 +691,7 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		"env":               envName,
 		"status":            report.Status,
 		"results":           results,
+		"recent_changes":    report.RecentChanges,
 		"suppressed_checks": report.SuppressedChecks,
 		"suggestions":       report.Suggestions,
 		"summary":           report.Summary,

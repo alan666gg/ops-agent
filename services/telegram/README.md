@@ -31,7 +31,7 @@ Current behavior:
 - Stores one pending natural-language confirmation per Telegram actor, so state-changing actions require the same actor to reply `确认执行` before they are sent to `ops-api`
 - Writes LLM tool calls and confirmation events to the Telegram audit file
 - Can enforce actor-level RBAC and input deny patterns from `configs/chatops.yaml`
-- Surfaces incident `highlights` first in `/health` replies so runtime signals like `CONTAINER_OOMKILLED` or recent systemd errors are visible before the longer result list
+- Surfaces incident `highlights` first in `/health` replies so runtime signals like `CONTAINER_OOMKILLED` or recent systemd errors are visible before the longer result list, and also shows recent change markers plus suggestion `strategy` values such as `restart_candidate`, `change_regression`, or `capacity`
 
 Supported commands:
 

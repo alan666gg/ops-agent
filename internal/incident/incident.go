@@ -19,8 +19,13 @@ type Suggestion struct {
 	Action           string   `json:"action"`
 	Args             []string `json:"args,omitempty"`
 	TargetHost       string   `json:"target_host,omitempty"`
+	Strategy         string   `json:"strategy,omitempty"`
 	Reason           string   `json:"reason"`
 	RequiresApproval bool     `json:"requires_approval"`
+}
+
+type ReportContext struct {
+	RecentChanges []TimelineEntry `json:"recent_changes,omitempty"`
 }
 
 type SuppressedCheck struct {
@@ -66,6 +71,7 @@ type Report struct {
 	TriggeredAt      time.Time         `json:"triggered_at"`
 	Results          []checks.Result   `json:"results"`
 	External         *ExternalAlert    `json:"external,omitempty"`
+	RecentChanges    []TimelineEntry   `json:"recent_changes,omitempty"`
 	Suggestions      []Suggestion      `json:"suggestions,omitempty"`
 	FailCount        int               `json:"fail_count"`
 	WarnCount        int               `json:"warn_count"`
@@ -98,6 +104,10 @@ func SilenceActive(silence *ExternalSilence, now time.Time) bool {
 }
 
 func BuildReport(source, envName string, env config.Environment, results []checks.Result, policyCfg policy.Config, recentAutoActions int) Report {
+	return BuildReportWithContext(source, envName, env, results, policyCfg, recentAutoActions, ReportContext{})
+}
+
+func BuildReportWithContext(source, envName string, env config.Environment, results []checks.Result, policyCfg policy.Config, recentAutoActions int, ctx ReportContext) Report {
 	report := Report{
 		Source:      source,
 		Project:     env.ProjectName(),
@@ -107,6 +117,7 @@ func BuildReport(source, envName string, env config.Environment, results []check
 		Results:     append([]checks.Result(nil), results...),
 		TotalChecks: len(results),
 	}
+	report.RecentChanges = trimRecentChanges(ctx.RecentChanges, 3)
 	suppressions := BuildSuppressions(env, results)
 	var actionable []checks.Result
 
@@ -136,7 +147,7 @@ func BuildReport(source, envName string, env config.Environment, results []check
 		}
 	}
 
-	report.Suggestions = BuildSuggestions(envName, env, actionable, policyCfg, recentAutoActions)
+	report.Suggestions = BuildSuggestionsWithContext(envName, env, actionable, policyCfg, recentAutoActions, ctx)
 	report.Summary = buildSummary(report)
 	report.Highlights = buildHighlights(report)
 	report.Fingerprint = fingerprint(report)
@@ -207,17 +218,22 @@ func BuildSuppressions(env config.Environment, results []checks.Result) map[stri
 }
 
 func BuildSuggestions(envName string, env config.Environment, results []checks.Result, policyCfg policy.Config, recentAutoActions int) []Suggestion {
+	return BuildSuggestionsWithContext(envName, env, results, policyCfg, recentAutoActions, ReportContext{})
+}
+
+func BuildSuggestionsWithContext(envName string, env config.Environment, results []checks.Result, policyCfg policy.Config, recentAutoActions int, ctx ReportContext) []Suggestion {
 	var out []Suggestion
-	seen := map[string]bool{}
-	serviceByKey := map[string]config.Service{}
+	seen := map[string]int{}
 	hostByKey := map[string]config.Host{}
 	depByKey := map[string]string{}
+	serviceNameByCheck := map[string]string{}
+	serviceResults := map[string][]checks.Result{}
 
 	for _, svc := range env.Services {
 		suffix := sanitizeName(svc.Name)
-		serviceByKey["service_"+suffix] = svc
-		serviceByKey["service_runtime_"+suffix] = svc
-		serviceByKey["service_logs_"+suffix] = svc
+		serviceNameByCheck["service_"+suffix] = svc.Name
+		serviceNameByCheck["service_runtime_"+suffix] = svc.Name
+		serviceNameByCheck["service_logs_"+suffix] = svc.Name
 	}
 	for _, host := range env.Hosts {
 		suffix := sanitizeName(host.Name)
@@ -245,10 +261,11 @@ func BuildSuggestions(envName string, env config.Environment, results []checks.R
 
 	add := func(s Suggestion) {
 		key := s.Action + "|" + s.TargetHost + "|" + strings.Join(s.Args, ",")
-		if seen[key] {
+		if idx, ok := seen[key]; ok {
+			out[idx] = mergeSuggestion(out[idx], s)
 			return
 		}
-		seen[key] = true
+		seen[key] = len(out)
 		decision := policyCfg.Evaluate(s.Action, envName, recentAutoActions)
 		s.RequiresApproval = decision.RequiresApproval
 		out = append(out, s)
@@ -258,68 +275,97 @@ func BuildSuggestions(envName string, env config.Environment, results []checks.R
 		if res.Severity == checks.SeverityPass {
 			continue
 		}
+		if svcName, ok := serviceNameByCheck[res.Name]; ok {
+			serviceResults[svcName] = append(serviceResults[svcName], res)
+			continue
+		}
 		if host, ok := hostByKey[res.Name]; ok {
 			add(Suggestion{
 				Action:     "check_host_health",
+				Strategy:   "investigate",
 				TargetHost: host.Name,
 				Reason:     fmt.Sprintf("%s: %s", res.Name, res.Message),
 			})
 			continue
 		}
-		if svc, ok := serviceByKey[res.Name]; ok {
-			host, hasHost := serviceHost(env, svc)
-			if strings.TrimSpace(svc.HealthcheckURL) != "" {
-				add(Suggestion{
-					Action: "check_service_health",
-					Args:   []string{svc.HealthcheckURL},
-					Reason: fmt.Sprintf("%s: %s", res.Name, res.Message),
-				})
-			}
-			if hasHost && strings.EqualFold(strings.TrimSpace(svc.Type), "container") {
-				switch res.Code {
-				case "CONTAINER_OOMKILLED", "CONTAINER_FLAPPING":
-					add(Suggestion{
-						Action:     "check_host_health",
-						TargetHost: host.Name,
-						Reason:     fmt.Sprintf("%s on %s needs host-level inspection before restart (%s)", svc.Name, host.Name, res.Code),
-					})
-					continue
-				}
-			}
-			if hasHost && strings.EqualFold(strings.TrimSpace(svc.Type), "systemd") && strings.HasPrefix(res.Name, "service_logs_") {
-				add(Suggestion{
-					Action:     "check_host_health",
-					TargetHost: host.Name,
-					Reason:     fmt.Sprintf("%s reported recent systemd errors on %s", svc.Name, host.Name),
-				})
-				continue
-			}
-			if res.Severity == checks.SeverityFail && strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) != "" {
-				targetHost := ""
-				if hasHost {
-					targetHost = host.Name
-				}
-				add(Suggestion{
-					Action:     "restart_container",
-					TargetHost: targetHost,
-					Args:       []string{svc.ContainerName},
-					Reason:     fmt.Sprintf("%s is container-backed and failing", svc.Name),
-				})
-			}
-			continue
-		}
 		if dep, ok := depByKey[res.Name]; ok {
 			add(Suggestion{
-				Action: "check_dependencies",
-				Args:   []string{dep},
-				Reason: fmt.Sprintf("%s: %s", res.Name, res.Message),
+				Action:   "check_dependencies",
+				Args:     []string{dep},
+				Strategy: "dependency",
+				Reason:   fmt.Sprintf("%s: %s", res.Name, res.Message),
 			})
 			continue
 		}
 		if res.Name == "host_basics" {
 			add(Suggestion{
-				Action: "check_host_health",
-				Reason: fmt.Sprintf("%s: %s", res.Name, res.Message),
+				Action:   "check_host_health",
+				Strategy: "investigate",
+				Reason:   fmt.Sprintf("%s: %s", res.Name, res.Message),
+			})
+		}
+	}
+
+	for _, svc := range env.Services {
+		items := serviceResults[svc.Name]
+		if len(items) == 0 {
+			continue
+		}
+		host, hasHost := serviceHost(env, svc)
+		change := latestRelevantChange(ctx.RecentChanges, svc, host, hasHost)
+		changeHint := formatChangeHint(change)
+		if strings.TrimSpace(svc.HealthcheckURL) != "" {
+			strategy := "investigate"
+			reason := fmt.Sprintf("%s reported service health failures", svc.Name)
+			if change != nil {
+				strategy = "change_regression"
+				reason = fmt.Sprintf("%s started failing near %s; inspect release/config drift before restart", svc.Name, changeHint)
+			}
+			add(Suggestion{
+				Action:   "check_service_health",
+				Args:     []string{svc.HealthcheckURL},
+				Strategy: strategy,
+				Reason:   reason,
+			})
+		}
+		if hasHost {
+			switch serviceRemediationStrategy(items, change) {
+			case "capacity":
+				add(Suggestion{
+					Action:     "check_host_health",
+					TargetHost: host.Name,
+					Strategy:   "capacity",
+					Reason:     fmt.Sprintf("%s on %s shows OOM or restart pressure; inspect host capacity before restart", svc.Name, host.Name),
+				})
+			case "change_regression":
+				add(Suggestion{
+					Action:     "check_host_health",
+					TargetHost: host.Name,
+					Strategy:   "change_regression",
+					Reason:     fmt.Sprintf("%s on %s started failing near %s; inspect rollout and rollback readiness", svc.Name, host.Name, changeHint),
+				})
+			case "investigate":
+				if hasSystemdErrors(items) || hasRuntimeInstability(items) {
+					add(Suggestion{
+						Action:     "check_host_health",
+						TargetHost: host.Name,
+						Strategy:   "investigate",
+						Reason:     fmt.Sprintf("%s on %s needs runtime inspection before restart", svc.Name, host.Name),
+					})
+				}
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) != "" && shouldRestartContainer(items, change) {
+			targetHost := ""
+			if hasHost {
+				targetHost = host.Name
+			}
+			add(Suggestion{
+				Action:     "restart_container",
+				TargetHost: targetHost,
+				Args:       []string{svc.ContainerName},
+				Strategy:   "restart_candidate",
+				Reason:     fmt.Sprintf("%s is stopped without strong change/capacity signals; restart is a reasonable next step", svc.Name),
 			})
 		}
 	}
@@ -357,9 +403,15 @@ func buildHighlights(report Report) []string {
 		limit = len(active)
 	}
 	out := make([]string, 0, limit)
+	if report.Status != "ok" && len(report.RecentChanges) > 0 {
+		out = append(out, "recent change "+formatChangeHint(&report.RecentChanges[0]))
+	}
 	for i := 0; i < limit; i++ {
 		item := active[i]
 		out = append(out, fmt.Sprintf("%s [%s] %s", item.Name, item.Code, trimHighlight(item.Message)))
+	}
+	if len(out) > 4 {
+		out = out[:4]
 	}
 	return out
 }
@@ -506,4 +558,154 @@ func sanitizeName(s string) string {
 		}
 	}
 	return strings.Trim(b.String(), "_")
+}
+
+func latestRelevantChange(changes []TimelineEntry, svc config.Service, host config.Host, hasHost bool) *TimelineEntry {
+	for i := range changes {
+		if changeMatchesService(changes[i], svc, host, hasHost) {
+			return &changes[i]
+		}
+	}
+	return nil
+}
+
+func changeMatchesService(change TimelineEntry, svc config.Service, host config.Host, hasHost bool) bool {
+	fields := []string{
+		strings.ToLower(strings.TrimSpace(change.Target)),
+		strings.ToLower(strings.TrimSpace(change.Message)),
+		strings.ToLower(strings.TrimSpace(change.Reference)),
+	}
+	tokens := []string{
+		strings.ToLower(strings.TrimSpace(svc.Name)),
+		strings.ToLower(strings.TrimSpace(svc.ContainerName)),
+		strings.ToLower(strings.TrimSpace(svc.SystemdUnit)),
+	}
+	if hasHost {
+		tokens = append(tokens, strings.ToLower(strings.TrimSpace(host.Name)), strings.ToLower(strings.TrimSpace(host.Host)))
+	}
+	for _, token := range tokens {
+		if token == "" {
+			continue
+		}
+		for _, field := range fields {
+			if field != "" && strings.Contains(field, token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func serviceRemediationStrategy(items []checks.Result, change *TimelineEntry) string {
+	if hasCode(items, "CONTAINER_OOMKILLED") {
+		return "capacity"
+	}
+	if change != nil && (hasRuntimeInstability(items) || hasSystemdErrors(items) || hasHealthFailures(items) || hasCode(items, "CONTAINER_NOT_RUNNING") || hasCode(items, "CONTAINER_EXITED_NONZERO")) {
+		return "change_regression"
+	}
+	if hasRuntimeInstability(items) || hasSystemdErrors(items) {
+		return "investigate"
+	}
+	return ""
+}
+
+func shouldRestartContainer(items []checks.Result, change *TimelineEntry) bool {
+	if change != nil {
+		return false
+	}
+	if hasCode(items, "CONTAINER_OOMKILLED") || hasCode(items, "CONTAINER_FLAPPING") || hasCode(items, "CONTAINER_RESTARTS_WARN") || hasCode(items, "CONTAINER_RECENT_RESTART") || hasCode(items, "CONTAINER_RESTARTING") {
+		return false
+	}
+	return hasCode(items, "CONTAINER_NOT_RUNNING") || hasCode(items, "CONTAINER_EXITED_NONZERO")
+}
+
+func hasRuntimeInstability(items []checks.Result) bool {
+	for _, item := range items {
+		if strings.HasPrefix(item.Code, "CONTAINER_") && item.Code != "CONTAINER_NOT_RUNNING" && item.Code != "CONTAINER_EXITED_NONZERO" && item.Code != "OK" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSystemdErrors(items []checks.Result) bool {
+	return hasCode(items, "SYSTEMD_RECENT_ERRORS")
+}
+
+func hasHealthFailures(items []checks.Result) bool {
+	for _, item := range items {
+		if strings.HasPrefix(item.Name, "service_") && !strings.HasPrefix(item.Name, "service_runtime_") && !strings.HasPrefix(item.Name, "service_logs_") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCode(items []checks.Result, code string) bool {
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Code), strings.TrimSpace(code)) {
+			return true
+		}
+	}
+	return false
+}
+
+func formatChangeHint(change *TimelineEntry) string {
+	if change == nil {
+		return "recent change"
+	}
+	parts := []string{strings.TrimSpace(change.Action)}
+	if strings.TrimSpace(change.Reference) != "" {
+		parts = append(parts, "ref="+change.Reference)
+	}
+	if strings.TrimSpace(change.Revision) != "" {
+		parts = append(parts, "rev="+change.Revision)
+	}
+	if strings.TrimSpace(change.Target) != "" {
+		parts = append(parts, "target="+change.Target)
+	}
+	return strings.Join(parts, " ")
+}
+
+func trimRecentChanges(items []TimelineEntry, limit int) []TimelineEntry {
+	if limit <= 0 || len(items) <= limit {
+		return append([]TimelineEntry(nil), items...)
+	}
+	return append([]TimelineEntry(nil), items[:limit]...)
+}
+
+func mergeSuggestion(existing, next Suggestion) Suggestion {
+	if strings.TrimSpace(next.Strategy) != "" && strategyRank(next.Strategy) > strategyRank(existing.Strategy) {
+		existing.Strategy = next.Strategy
+	}
+	if strings.TrimSpace(next.Reason) != "" && !strings.Contains(existing.Reason, next.Reason) {
+		if strings.TrimSpace(existing.Reason) == "" {
+			existing.Reason = next.Reason
+		} else {
+			existing.Reason += "; " + next.Reason
+		}
+	}
+	if existing.TargetHost == "" {
+		existing.TargetHost = next.TargetHost
+	}
+	if len(existing.Args) == 0 && len(next.Args) > 0 {
+		existing.Args = append([]string(nil), next.Args...)
+	}
+	existing.RequiresApproval = existing.RequiresApproval || next.RequiresApproval
+	return existing
+}
+
+func strategyRank(v string) int {
+	switch strings.TrimSpace(v) {
+	case "change_regression":
+		return 4
+	case "capacity":
+		return 3
+	case "restart_candidate":
+		return 2
+	case "dependency":
+		return 1
+	default:
+		return 0
+	}
 }

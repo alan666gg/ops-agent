@@ -149,7 +149,11 @@ func TextMessage(report incident.Report) string {
 		if len(item.Args) > 0 {
 			args = " args=" + strings.Join(item.Args, ",")
 		}
-		lines = append(lines, fmt.Sprintf("- suggest %s%s%s%s", item.Action, target, args, approval))
+		strategy := ""
+		if strings.TrimSpace(item.Strategy) != "" {
+			strategy = " strategy=" + item.Strategy
+		}
+		lines = append(lines, fmt.Sprintf("- suggest %s%s%s%s%s", item.Action, target, args, strategy, approval))
 	}
 	for _, res := range report.FailedChecks {
 		lines = append(lines, fmt.Sprintf("- fail %s [%s]: %s", res.Name, res.Code, res.Message))

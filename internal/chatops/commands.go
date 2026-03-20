@@ -258,6 +258,12 @@ func FormatHealth(resp HealthResponse) string {
 		}
 		lines = append(lines, "- highlight "+trimForChat(item, 140))
 	}
+	for i, item := range resp.RecentChanges {
+		if i >= 2 {
+			break
+		}
+		lines = append(lines, "- recent_change "+trimForChat(formatTimelineEntry(item), 160))
+	}
 	appendResults := func(prefix string, items []checks.Result, limit int) {
 		count := 0
 		for _, item := range items {
@@ -297,6 +303,9 @@ func FormatHealth(resp HealthResponse) string {
 		}
 		if len(item.Args) > 0 {
 			line += " args=" + strings.Join(item.Args, ",")
+		}
+		if strings.TrimSpace(item.Strategy) != "" {
+			line += " strategy=" + item.Strategy
 		}
 		if item.RequiresApproval {
 			line += " approval_required"

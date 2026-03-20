@@ -28,6 +28,7 @@ type HealthResponse struct {
 	Env              string                     `json:"env"`
 	Status           string                     `json:"status"`
 	Results          []checks.Result            `json:"results"`
+	RecentChanges    []incident.TimelineEntry   `json:"recent_changes,omitempty"`
 	SuppressedChecks []incident.SuppressedCheck `json:"suppressed_checks"`
 	Suggestions      []incident.Suggestion      `json:"suggestions"`
 	Summary          string                     `json:"summary"`

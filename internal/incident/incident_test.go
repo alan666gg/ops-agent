@@ -132,6 +132,11 @@ func TestBuildSuggestionsForContainerRuntimeFailure(t *testing.T) {
 		t.Fatalf("missing expected suggestions: %#v", report.Suggestions)
 	}
 	for _, item := range report.Suggestions {
+		if item.Action == "check_host_health" && item.Strategy != "investigate" {
+			t.Fatalf("expected investigate strategy for flapping container, got %#v", item)
+		}
+	}
+	for _, item := range report.Suggestions {
 		if item.Action == "restart_container" {
 			t.Fatalf("did not expect restart suggestion for flapping container: %#v", report.Suggestions)
 		}
@@ -167,5 +172,64 @@ func TestBuildSuggestionsForStoppedContainerIncludeTargetHostRestart(t *testing.
 	}
 	if !foundRestart {
 		t.Fatalf("expected restart suggestion, got %#v", report.Suggestions)
+	}
+}
+
+func TestBuildSuggestionsSuppressRestartWhenRecentChangeLooksRelevant(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{{Name: "app-1", Host: "10.0.0.5"}},
+		Services: []config.Service{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api-1", HealthcheckURL: "http://10.0.0.5:8080/healthz"},
+		},
+	}
+	results := []checks.Result{
+		{Name: "service_runtime_api", Code: "CONTAINER_NOT_RUNNING", Severity: checks.SeverityFail, Message: "container status=exited exit_code=1"},
+	}
+	report := BuildReportWithContext("ops-scheduler", "prod", env, results, policy.Config{}, 0, ReportContext{
+		RecentChanges: []TimelineEntry{
+			{Action: "deploy_event", Target: "service/api", Reference: "v2026.03.20", Revision: "abcdef123456"},
+		},
+	})
+	for _, item := range report.Suggestions {
+		if item.Action == "restart_container" {
+			t.Fatalf("did not expect restart suggestion after relevant deploy, got %#v", report.Suggestions)
+		}
+	}
+	foundChangeStrategy := false
+	for _, item := range report.Suggestions {
+		if item.Strategy == "change_regression" {
+			foundChangeStrategy = true
+		}
+	}
+	if !foundChangeStrategy {
+		t.Fatalf("expected change_regression suggestion, got %#v", report.Suggestions)
+	}
+	if len(report.Highlights) == 0 || !strings.Contains(report.Highlights[0], "recent change deploy_event ref=v2026.03.20 rev=abcdef123456") {
+		t.Fatalf("expected recent change in highlights, got %#v", report.Highlights)
+	}
+}
+
+func TestBuildSuggestionsForOOMUseCapacityStrategy(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{{Name: "app-1", Host: "10.0.0.5"}},
+		Services: []config.Service{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api-1", HealthcheckURL: "http://10.0.0.5:8080/healthz"},
+		},
+	}
+	results := []checks.Result{
+		{Name: "service_runtime_api", Code: "CONTAINER_OOMKILLED", Severity: checks.SeverityFail, Message: "oom_killed=true exit_code=137"},
+	}
+	report := BuildReport("ops-scheduler", "prod", env, results, policy.Config{}, 0)
+	foundCapacity := false
+	for _, item := range report.Suggestions {
+		if item.Strategy == "capacity" && item.Action == "check_host_health" {
+			foundCapacity = true
+		}
+		if item.Action == "restart_container" {
+			t.Fatalf("did not expect restart suggestion for oom kill, got %#v", report.Suggestions)
+		}
+	}
+	if !foundCapacity {
+		t.Fatalf("expected capacity suggestion, got %#v", report.Suggestions)
 	}
 }

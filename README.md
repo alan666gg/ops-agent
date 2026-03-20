@@ -295,7 +295,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `ops-scheduler --discover-interval` runs the same discovery/apply flow on a lower cadence than health checks, so new host services can join the next health cycle without a restart.
 - `host_ssh_*` remains the root-cause gate for host reachability; if SSH is already down, the incident layer suppresses dependent host resource/process checks to avoid duplicate noise.
 - `service_runtime_*` and `service_logs_*` are treated as service-scoped signals, so container flapping and recent systemd error logs show up in the same incident context as the parent service.
-- `/health` and `/health/run` responses now include `highlights`, which bubble the most actionable runtime/log signals to the top for Telegram and LLM consumers.
+- `/health` and `/health/run` responses now include `highlights`, plus recent change context and strategy-tagged suggestions so callers can distinguish restart candidates from likely release regressions or capacity issues.
 - `environments.<env>.project` adds a first-class project boundary; actions, incident summaries, and Telegram access control can now be scoped by project.
 - `audit-driver sqlite` + `incident-state-file` upgrades the control plane from append-only logs to a queryable state model with active incidents, acknowledgements, and ownership.
 - `environments.<env>.prometheus` lets the control plane read that environment's Prometheus as an external observability source without giving the bot write access.
@@ -313,7 +313,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - Notification routes currently match on `env`, `source`, and `severity`, and support a default receiver fallback.
 - Active silences and maintenance windows suppress notifications without stopping health checks; if an issue survives the mute window, the controller will deliver it after the window ends.
 - `--notify-trigger-after` and `--notify-recovery-after` let you suppress flapping by requiring consecutive unhealthy or healthy cycles before opening or closing an incident.
-- Health responses now include `summary`, `suggestions`, and `suppressed_checks` so callers can distinguish root causes from downstream symptoms.
+- Health responses now include `summary`, `recent_changes`, strategy-tagged `suggestions`, and `suppressed_checks` so callers can distinguish root causes from downstream symptoms and nearby deploy/change risk.
 - Acknowledged incidents now suppress duplicate follow-up notifications until the fingerprint changes again, so ownership and ack actually reduce noise instead of just adding metadata.
 
 ## ChatOps

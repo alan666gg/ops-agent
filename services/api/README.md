@@ -52,6 +52,7 @@ Incident detail responses now include structured `external` and `silence` state 
 `GET /health/run` includes local host basics, configured host SSH reachability, service health URLs, and dependency checks for the selected environment.
 If a service declares `host`, the response can suppress downstream service symptoms when that host is already the active root cause.
 If a service declares `slo`, the response can also include synthetic `slo_availability_*` results based on recent audit history.
+`GET /health/run` now also returns `recent_changes` and strategy-tagged `suggestions`, so callers can tell apart restart candidates, likely release regressions, dependency checks, and host-capacity investigations.
 If the API is started with notifier flags, `/health/run?...&notify=1` also sends the incident summary when the status is `warn` or `fail`.
 `--incident-state-file` persists active incident state, acknowledgement, owner, and notes; the same store powers `/incidents/active`, `/incidents/get`, `/incidents/timeline`, `/incidents/ack`, and `/incidents/assign`.
 `GET /incidents/stats` summarizes lifecycle state from the incident store, including open/resolved counts, reopen totals, MTTA, and MTTR, optionally scoped by `project`, `env`, or `source`.

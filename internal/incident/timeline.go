@@ -37,6 +37,39 @@ type TimelineBuilder struct {
 	Now   func() time.Time
 }
 
+func RecentChanges(store audit.Store, project, env string, window time.Duration, limit int) ([]TimelineEntry, error) {
+	if store == nil {
+		return nil, fmt.Errorf("audit store not configured")
+	}
+	if window <= 0 {
+		window = 2 * time.Hour
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	events, err := store.List(audit.Query{
+		Since:    time.Now().UTC().Add(-window),
+		Projects: []string{project},
+		Env:      env,
+		Limit:    maxInt(limit*8, 64),
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]TimelineEntry, 0, limit)
+	for _, evt := range events {
+		entry := timelineEntryFromEvent(evt)
+		if entry.Kind != "change" {
+			continue
+		}
+		out = append(out, entry)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (b TimelineBuilder) Build(record Record, window time.Duration) (Timeline, error) {
 	if b.Store == nil {
 		return Timeline{}, fmt.Errorf("audit store not configured")
@@ -103,11 +136,20 @@ func (b TimelineBuilder) Build(record Record, window time.Duration) (Timeline, e
 }
 
 func timelineEntry(evt audit.Event, record Record) TimelineEntry {
+	entry := timelineEntryFromEvent(evt)
+	if entry.Kind == "" {
+		return TimelineEntry{}
+	}
+	entry.LikelyChange = entry.Kind == "change" && likelyCorrelated(evt.Time, record.FirstSeenAt)
+	return entry
+}
+
+func timelineEntryFromEvent(evt audit.Event) TimelineEntry {
 	kind := EventKind(evt)
 	if kind == "" {
 		return TimelineEntry{}
 	}
-	entry := TimelineEntry{
+	return TimelineEntry{
 		Time:       evt.Time,
 		Kind:       kind,
 		Action:     strings.TrimSpace(evt.Action),
@@ -120,8 +162,6 @@ func timelineEntry(evt audit.Event, record Record) TimelineEntry {
 		URL:        strings.TrimSpace(evt.URL),
 		Message:    strings.TrimSpace(evt.Message),
 	}
-	entry.LikelyChange = kind == "change" && likelyCorrelated(evt.Time, record.FirstSeenAt)
-	return entry
 }
 
 func EventKind(evt audit.Event) string {
@@ -178,4 +218,11 @@ func likelyCorrelated(at, firstSeen time.Time) bool {
 		return false
 	}
 	return !at.Before(firstSeen.Add(-30 * time.Minute))
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

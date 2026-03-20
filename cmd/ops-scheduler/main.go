@@ -230,7 +230,10 @@ func main() {
 		}
 		policyCfg, _ := policy.Load(*policyFile)
 		recentAutoActions, _ := auditStore.CountRecentAutoActions(project, *envName, time.Now().UTC().Add(-time.Hour))
-		report := incident.BuildReport("ops-scheduler", *envName, env, results, policyCfg, recentAutoActions)
+		recentChanges, _ := incident.RecentChanges(auditStore, project, *envName, 2*time.Hour, 5)
+		report := incident.BuildReportWithContext("ops-scheduler", *envName, env, results, policyCfg, recentAutoActions, incident.ReportContext{
+			RecentChanges: recentChanges,
+		})
 		record, err := syncIncident(incidentStore, report)
 		if err != nil {
 			_ = auditStore.Append(audit.Event{
