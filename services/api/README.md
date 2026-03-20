@@ -7,8 +7,9 @@ Run:
 ```bash
 export OPS_API_TOKEN=change-me
 export OPS_ALERT_TOKEN=change-me-alerts
+export OPS_CHANGE_TOKEN=change-me-changes
 export OPS_ALERTMANAGER_API_TOKEN=change-me-alertmanager-api
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2 --alertmanager-sync-ack --alertmanager-silence-duration 2h --alertmanager-refresh-interval 5m
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2 --alertmanager-sync-ack --alertmanager-silence-duration 2h --alertmanager-refresh-interval 5m --change-token "$OPS_CHANGE_TOKEN"
 ```
 
 Endpoints:
@@ -18,6 +19,8 @@ Endpoints:
 - `GET /health/run?env=test` (Bearer token)
 - `GET /prometheus/query?env=prod&query=up` (Bearer token)
 - `POST /changes/events` (Bearer token; ingest external deploy/change events)
+- `POST /changes/github` (Bearer main API token or dedicated `OPS_CHANGE_TOKEN`)
+- `POST /changes/gitlab` (Bearer main API token or dedicated `OPS_CHANGE_TOKEN`)
 - `GET /changes/recent?project=core&env=prod&minutes=120` (Bearer token)
 - `POST /alerts/alertmanager` (Bearer token from `OPS_ALERT_TOKEN` or the main API token)
 - `POST /actions/run` (Bearer token; direct mode; request body supports `env` and optional `target_host`)
@@ -42,7 +45,7 @@ OpenAPI draft: `docs/openapi.yaml`
 
 If `target_host` is provided, the API resolves that host from the selected environment and runs the runbook over SSH.
 If the selected environment declares `prometheus.base_url`, `GET /prometheus/query` proxies read-only PromQL queries through that environment's Prometheus.
-`POST /changes/events` lets CI/CD or manual tooling push deploy and change markers into the audit stream so incident timelines can correlate outages with nearby external changes. `GET /changes/recent` returns the latest change-classified entries across the same audit backend.
+`POST /changes/events` lets CI/CD or manual tooling push deploy and change markers into the audit stream so incident timelines can correlate outages with nearby external changes. `POST /changes/github` and `POST /changes/gitlab` accept provider webhook payloads directly and map them into the same change stream, optionally using `?env=prod` when the payload does not carry environment context. `GET /changes/recent` returns the latest change-classified entries across the same audit backend.
 `POST /alerts/alertmanager` accepts Alertmanager webhook payloads and turns each external alert into an incident record, so external Prometheus alerts share the same acknowledge/assign timeline as native bot incidents.
 Incident detail responses now include structured `external` and `silence` state for Alertmanager-backed incidents.
 

@@ -145,6 +145,7 @@ Use `OPS_ALERTMANAGER_API_TOKEN` when your Alertmanager API requires authenticat
 Created silences are now stored as structured incident state and shown back in `/incidents/get`, Telegram incident detail, and timelines. You can later expire one through `/incidents/unsilence` or Telegram `/unsilence`.
 `ops-api` can also periodically reconcile stored Alertmanager silence state with `--alertmanager-refresh-interval` and `--alertmanager-refresh-timeout`, so manual silence expiry or external changes eventually flow back into the local incident record. You can trigger the same refresh on demand with `POST /incidents/reconcile-alertmanager`.
 For deploy/change correlation, external systems can also post `POST /changes/events` with `env`, `message`, and optional `kind/reference/url`; those markers immediately become visible in `/changes/recent` and incident timelines.
+If you prefer direct provider webhook ingestion, `ops-api` also supports `POST /changes/github` and `POST /changes/gitlab`. For safer integration, set a dedicated `OPS_CHANGE_TOKEN` so CI/CD systems do not need the broader operator API token.
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
 
@@ -251,6 +252,11 @@ curl -s -X POST http://127.0.0.1:8090/changes/events \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $OPS_API_TOKEN" \
   -d '{"kind":"deploy","env":"prod","actor":"ci:github-actions","target":"service/api","message":"release 2026.03.20","reference":"git:abc123","url":"https://ci.example/run/1"}'
+curl -s -X POST "http://127.0.0.1:8090/changes/github?env=prod" \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_CHANGE_TOKEN" \
+  -H 'X-GitHub-Event: deployment_status' \
+  -d '{"repository":{"full_name":"org/api"},"sender":{"login":"octocat"},"deployment":{"environment":"prod","sha":"abc123","ref":"refs/heads/main"},"deployment_status":{"state":"success","environment_url":"https://api.example.com","updated_at":"2026-03-20T12:00:00Z"}}'
 curl -s "http://127.0.0.1:8090/changes/recent?project=core&env=prod&minutes=120" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/active?project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/get?id=ops-scheduler|core|prod" -H "Authorization: Bearer $OPS_API_TOKEN"

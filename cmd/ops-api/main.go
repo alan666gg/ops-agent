@@ -49,6 +49,7 @@ type server struct {
 	incidentStore incident.Store
 	token         string
 	alertToken    string
+	changeToken   string
 	alertAPIToken string
 	syncAlertAck  bool
 	alertSilence  time.Duration
@@ -222,17 +223,18 @@ type alertmanagerIngestResponse struct {
 }
 
 type changeEventRequest struct {
-	Kind       string `json:"kind,omitempty"`
-	Action     string `json:"action,omitempty"`
-	Actor      string `json:"actor,omitempty"`
-	Project    string `json:"project,omitempty"`
-	Env        string `json:"env"`
-	Target     string `json:"target,omitempty"`
-	TargetHost string `json:"target_host,omitempty"`
-	Status     string `json:"status,omitempty"`
-	Message    string `json:"message"`
-	Reference  string `json:"reference,omitempty"`
-	URL        string `json:"url,omitempty"`
+	OccurredAt time.Time `json:"occurred_at,omitempty"`
+	Kind       string    `json:"kind,omitempty"`
+	Action     string    `json:"action,omitempty"`
+	Actor      string    `json:"actor,omitempty"`
+	Project    string    `json:"project,omitempty"`
+	Env        string    `json:"env"`
+	Target     string    `json:"target,omitempty"`
+	TargetHost string    `json:"target_host,omitempty"`
+	Status     string    `json:"status,omitempty"`
+	Message    string    `json:"message"`
+	Reference  string    `json:"reference,omitempty"`
+	URL        string    `json:"url,omitempty"`
 }
 
 type changesResponse struct {
@@ -241,6 +243,106 @@ type changesResponse struct {
 	Env           string                   `json:"env,omitempty"`
 	Count         int                      `json:"count"`
 	Items         []incident.TimelineEntry `json:"items"`
+}
+
+type githubRepository struct {
+	FullName string `json:"full_name"`
+	Name     string `json:"name"`
+	HTMLURL  string `json:"html_url"`
+}
+
+type githubSender struct {
+	Login string `json:"login"`
+}
+
+type githubWorkflow struct {
+	Name string `json:"name"`
+}
+
+type githubWorkflowRun struct {
+	Name       string    `json:"name"`
+	HeadBranch string    `json:"head_branch"`
+	HeadSHA    string    `json:"head_sha"`
+	Status     string    `json:"status"`
+	Conclusion string    `json:"conclusion"`
+	HTMLURL    string    `json:"html_url"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type githubDeployment struct {
+	Environment string         `json:"environment"`
+	SHA         string         `json:"sha"`
+	Ref         string         `json:"ref"`
+	Task        string         `json:"task"`
+	Description string         `json:"description"`
+	Payload     map[string]any `json:"payload"`
+}
+
+type githubDeploymentStatus struct {
+	State          string    `json:"state"`
+	Description    string    `json:"description"`
+	EnvironmentURL string    `json:"environment_url"`
+	LogURL         string    `json:"log_url"`
+	TargetURL      string    `json:"target_url"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type githubChangeWebhook struct {
+	Action           string                  `json:"action"`
+	Repository       githubRepository        `json:"repository"`
+	Sender           githubSender            `json:"sender"`
+	Workflow         *githubWorkflow         `json:"workflow,omitempty"`
+	WorkflowRun      *githubWorkflowRun      `json:"workflow_run,omitempty"`
+	Deployment       *githubDeployment       `json:"deployment,omitempty"`
+	DeploymentStatus *githubDeploymentStatus `json:"deployment_status,omitempty"`
+}
+
+type gitlabProject struct {
+	PathWithNamespace string `json:"path_with_namespace"`
+	WebURL            string `json:"web_url"`
+	Name              string `json:"name"`
+}
+
+type gitlabVariable struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type gitlabPipelineAttributes struct {
+	ID             int              `json:"id"`
+	Name           string           `json:"name"`
+	Ref            string           `json:"ref"`
+	SHA            string           `json:"sha"`
+	Status         string           `json:"status"`
+	DetailedStatus string           `json:"detailed_status"`
+	Source         string           `json:"source"`
+	URL            string           `json:"url"`
+	Stages         []string         `json:"stages"`
+	Variables      []gitlabVariable `json:"variables"`
+	CreatedAt      string           `json:"created_at"`
+	FinishedAt     string           `json:"finished_at"`
+}
+
+type gitlabReleaseAttributes struct {
+	Name       string    `json:"name"`
+	Tag        string    `json:"tag"`
+	Action     string    `json:"action"`
+	ReleasedAt time.Time `json:"released_at"`
+}
+
+type gitlabChangeWebhook struct {
+	ObjectKind       string                   `json:"object_kind"`
+	EventName        string                   `json:"event_name"`
+	UserName         string                   `json:"user_name"`
+	Ref              string                   `json:"ref"`
+	CheckoutSHA      string                   `json:"checkout_sha"`
+	BeforeSHA        string                   `json:"before_sha"`
+	After            string                   `json:"after"`
+	Project          gitlabProject            `json:"project"`
+	ObjectAttributes gitlabPipelineAttributes `json:"object_attributes"`
+	Release          gitlabReleaseAttributes  `json:"release"`
 }
 
 func main() {
@@ -268,6 +370,7 @@ func main() {
 	notifyConfigFile := flag.String("notify-config", "", "notification routing config file (replaces direct notifier flags)")
 	token := flag.String("token", os.Getenv("OPS_API_TOKEN"), "api bearer token (or OPS_API_TOKEN env)")
 	alertToken := flag.String("alert-token", os.Getenv("OPS_ALERT_TOKEN"), "dedicated bearer/shared token for /alerts/alertmanager (or OPS_ALERT_TOKEN env)")
+	changeToken := flag.String("change-token", os.Getenv("OPS_CHANGE_TOKEN"), "dedicated bearer/shared token for /changes/* webhook ingestion (or OPS_CHANGE_TOKEN env)")
 	alertAPIToken := flag.String("alertmanager-api-token", os.Getenv("OPS_ALERTMANAGER_API_TOKEN"), "optional bearer token used when syncing Alertmanager silences")
 	syncAlertAck := flag.Bool("alertmanager-sync-ack", false, "when true, acknowledging an Alertmanager-backed incident also creates a silence in Alertmanager")
 	alertSilence := flag.Duration("alertmanager-silence-duration", 2*time.Hour, "silence duration used when --alertmanager-sync-ack is enabled")
@@ -325,6 +428,7 @@ func main() {
 		incidentStore: incidentStore,
 		token:         strings.TrimSpace(*token),
 		alertToken:    strings.TrimSpace(*alertToken),
+		changeToken:   strings.TrimSpace(*changeToken),
 		alertAPIToken: strings.TrimSpace(*alertAPIToken),
 		syncAlertAck:  *syncAlertAck,
 		alertSilence:  *alertSilence,
@@ -370,6 +474,8 @@ func main() {
 	mux.HandleFunc("/prometheus/query", s.handlePrometheusQuery)
 	mux.HandleFunc("/changes/events", s.handleChangeEvent)
 	mux.HandleFunc("/changes/recent", s.handleRecentChanges)
+	mux.HandleFunc("/changes/github", s.handleGitHubChangeWebhook)
+	mux.HandleFunc("/changes/gitlab", s.handleGitLabChangeWebhook)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
 	mux.HandleFunc("/incidents/stats", s.handleIncidentStats)
 	mux.HandleFunc("/incidents/active", s.handleActiveIncidents)
@@ -449,6 +555,9 @@ func (s *server) authorizedPath(r *http.Request) bool {
 	if r.URL.Path == "/alerts/alertmanager" {
 		return s.authorizedAlert(r) || s.authorized(r)
 	}
+	if r.URL.Path == "/changes/events" || r.URL.Path == "/changes/github" || r.URL.Path == "/changes/gitlab" {
+		return s.authorizedChange(r) || s.authorized(r)
+	}
 	return s.authorized(r)
 }
 
@@ -462,6 +571,20 @@ func (s *server) authorizedAlert(r *http.Request) bool {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == s.alertToken
+	}
+	return false
+}
+
+func (s *server) authorizedChange(r *http.Request) bool {
+	if s.changeToken == "" {
+		return false
+	}
+	if got := strings.TrimSpace(r.Header.Get("X-Ops-Change-Token")); got != "" {
+		return got == s.changeToken
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == s.changeToken
 	}
 	return false
 }
@@ -1173,6 +1296,60 @@ func (s *server) handleChangeEvent(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(evt)
 }
 
+func (s *server) handleGitHubChangeWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var payload githubChangeWebhook
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	req, err := githubWebhookToChangeRequest(r, payload)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	evt, err := s.buildChangeAuditEvent(req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if err := s.auditStore.Append(evt); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(evt)
+}
+
+func (s *server) handleGitLabChangeWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var payload gitlabChangeWebhook
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	req, err := gitlabWebhookToChangeRequest(r, payload)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	evt, err := s.buildChangeAuditEvent(req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if err := s.auditStore.Append(evt); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(evt)
+}
+
 func (s *server) handleRecentChanges(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1271,8 +1448,12 @@ func (s *server) buildChangeAuditEvent(req changeEventRequest) (audit.Event, err
 	if len(actor) > 200 || strings.Contains(actor, "\n") {
 		return audit.Event{}, fmt.Errorf("invalid actor")
 	}
+	occurredAt := req.OccurredAt.UTC()
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
 	return audit.Event{
-		Time:       time.Now().UTC(),
+		Time:       occurredAt,
 		Actor:      actor,
 		Action:     action,
 		Project:    project,
@@ -1281,6 +1462,70 @@ func (s *server) buildChangeAuditEvent(req changeEventRequest) (audit.Event, err
 		Target:     target,
 		Status:     status,
 		Message:    message,
+	}, nil
+}
+
+func githubWebhookToChangeRequest(r *http.Request, payload githubChangeWebhook) (changeEventRequest, error) {
+	eventType := strings.TrimSpace(r.Header.Get("X-GitHub-Event"))
+	envName := firstNonEmptyString(
+		strings.TrimSpace(r.URL.Query().Get("env")),
+		githubEnvFromPayload(payload),
+	)
+	if envName == "" {
+		return changeEventRequest{}, fmt.Errorf("env required; use deployment environment or pass ?env=<name>")
+	}
+	project := firstNonEmptyString(
+		strings.TrimSpace(r.URL.Query().Get("project")),
+	)
+	kind := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("kind")), githubKindForEvent(eventType))
+	action := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("action")), githubActionForEvent(eventType))
+	actor := firstNonEmptyString(payload.Sender.Login, "github:"+firstNonEmptyString(payload.Repository.FullName, payload.Repository.Name, "unknown"))
+	target := firstNonEmptyString(payload.Repository.FullName, payload.Repository.Name, envName)
+	reference, link, occurredAt, message := githubEventDetails(eventType, payload)
+	return changeEventRequest{
+		OccurredAt: occurredAt,
+		Kind:       kind,
+		Action:     action,
+		Actor:      actor,
+		Project:    project,
+		Env:        envName,
+		Target:     target,
+		Status:     githubStatusForEvent(eventType, payload),
+		Message:    message,
+		Reference:  reference,
+		URL:        link,
+	}, nil
+}
+
+func gitlabWebhookToChangeRequest(r *http.Request, payload gitlabChangeWebhook) (changeEventRequest, error) {
+	eventType := firstNonEmptyString(strings.TrimSpace(r.Header.Get("X-Gitlab-Event")), payload.EventName, payload.ObjectKind)
+	envName := firstNonEmptyString(
+		strings.TrimSpace(r.URL.Query().Get("env")),
+		gitlabEnvFromPayload(payload),
+	)
+	if envName == "" {
+		return changeEventRequest{}, fmt.Errorf("env required; provide ?env=<name> or include OPS_AGENT_ENV/CI_ENVIRONMENT_NAME in the payload")
+	}
+	project := firstNonEmptyString(
+		strings.TrimSpace(r.URL.Query().Get("project")),
+	)
+	kind := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("kind")), gitlabKindForEvent(eventType, payload))
+	action := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("action")), gitlabActionForEvent(eventType, payload))
+	actor := firstNonEmptyString(payload.UserName, "gitlab:"+firstNonEmptyString(payload.Project.PathWithNamespace, payload.Project.Name, "unknown"))
+	target := firstNonEmptyString(payload.Project.PathWithNamespace, payload.Project.Name, envName)
+	reference, link, occurredAt, message := gitlabEventDetails(eventType, payload)
+	return changeEventRequest{
+		OccurredAt: occurredAt,
+		Kind:       kind,
+		Action:     action,
+		Actor:      actor,
+		Project:    project,
+		Env:        envName,
+		Target:     target,
+		Status:     gitlabStatusForEvent(eventType, payload),
+		Message:    message,
+		Reference:  reference,
+		URL:        link,
 	}, nil
 }
 
@@ -1348,6 +1593,253 @@ func appendChangeMetadata(message, reference, link string) string {
 		parts = append(parts, link)
 	}
 	return strings.Join(parts, " | ")
+}
+
+func githubEnvFromPayload(payload githubChangeWebhook) string {
+	if payload.Deployment != nil {
+		if env := strings.TrimSpace(payload.Deployment.Environment); env != "" {
+			return env
+		}
+		if raw, ok := payload.Deployment.Payload["environment"]; ok {
+			return strings.TrimSpace(fmt.Sprint(raw))
+		}
+	}
+	return ""
+}
+
+func githubKindForEvent(eventType string) string {
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "deployment", "deployment_status":
+		return "deploy"
+	case "workflow_run":
+		return "change"
+	default:
+		return "change"
+	}
+}
+
+func githubActionForEvent(eventType string) string {
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "deployment", "deployment_status":
+		return "deploy_event"
+	case "workflow_run":
+		return "change_event"
+	default:
+		return "change_event"
+	}
+}
+
+func githubStatusForEvent(eventType string, payload githubChangeWebhook) string {
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "deployment":
+		return "planned"
+	case "deployment_status":
+		if payload.DeploymentStatus == nil {
+			return "ok"
+		}
+		switch strings.ToLower(strings.TrimSpace(payload.DeploymentStatus.State)) {
+		case "success":
+			return "ok"
+		case "failure", "error":
+			return "failed"
+		case "inactive":
+			return "rolled_back"
+		case "pending", "queued", "in_progress":
+			return "started"
+		default:
+			return normalizeChangeStatus(payload.DeploymentStatus.State)
+		}
+	case "workflow_run":
+		if payload.WorkflowRun == nil {
+			return "ok"
+		}
+		if conclusion := strings.ToLower(strings.TrimSpace(payload.WorkflowRun.Conclusion)); conclusion != "" {
+			switch conclusion {
+			case "success":
+				return "ok"
+			case "failure", "timed_out", "action_required":
+				return "failed"
+			case "cancelled", "skipped", "neutral":
+				return "canceled"
+			default:
+				return normalizeChangeStatus(conclusion)
+			}
+		}
+		if status := strings.ToLower(strings.TrimSpace(payload.WorkflowRun.Status)); status != "" {
+			switch status {
+			case "completed":
+				return "ok"
+			case "queued", "requested", "in_progress", "waiting":
+				return "started"
+			default:
+				return normalizeChangeStatus(status)
+			}
+		}
+	}
+	return "ok"
+}
+
+func githubEventDetails(eventType string, payload githubChangeWebhook) (reference, link string, occurredAt time.Time, message string) {
+	repo := firstNonEmptyString(payload.Repository.FullName, payload.Repository.Name, "unknown repo")
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "deployment":
+		if payload.Deployment != nil {
+			reference = firstNonEmptyString(payload.Deployment.SHA, payload.Deployment.Ref)
+			occurredAt = time.Now().UTC()
+			message = firstNonEmptyString(payload.Deployment.Description, fmt.Sprintf("github deployment created for %s env=%s ref=%s", repo, payload.Deployment.Environment, payload.Deployment.Ref))
+		}
+	case "deployment_status":
+		if payload.DeploymentStatus != nil {
+			reference = firstNonEmptyString(reference, payload.Deployment.SHA, payload.Deployment.Ref)
+			link = firstNonEmptyString(payload.DeploymentStatus.EnvironmentURL, payload.DeploymentStatus.LogURL, payload.DeploymentStatus.TargetURL, payload.Repository.HTMLURL)
+			occurredAt = firstNonZeroTime(payload.DeploymentStatus.UpdatedAt, payload.DeploymentStatus.CreatedAt)
+			message = firstNonEmptyString(payload.DeploymentStatus.Description, fmt.Sprintf("github deployment %s for %s env=%s", payload.DeploymentStatus.State, repo, githubEnvFromPayload(payload)))
+		}
+	case "workflow_run":
+		if payload.WorkflowRun != nil {
+			reference = firstNonEmptyString(payload.WorkflowRun.HeadSHA, payload.WorkflowRun.HeadBranch)
+			link = firstNonEmptyString(payload.WorkflowRun.HTMLURL, payload.Repository.HTMLURL)
+			occurredAt = firstNonZeroTime(payload.WorkflowRun.UpdatedAt, payload.WorkflowRun.CreatedAt)
+			name := firstNonEmptyString(payload.WorkflowRun.Name, func() string {
+				if payload.Workflow != nil {
+					return payload.Workflow.Name
+				}
+				return ""
+			}())
+			message = fmt.Sprintf("github workflow %s status=%s conclusion=%s repo=%s branch=%s", defaultString(name, "workflow"), defaultString(payload.WorkflowRun.Status, "unknown"), defaultString(payload.WorkflowRun.Conclusion, "none"), repo, defaultString(payload.WorkflowRun.HeadBranch, "unknown"))
+		}
+	}
+	if message == "" {
+		message = fmt.Sprintf("github change event %s for %s", defaultString(eventType, "unknown"), repo)
+	}
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	return reference, link, occurredAt, message
+}
+
+func gitlabEnvFromPayload(payload gitlabChangeWebhook) string {
+	for _, v := range payload.ObjectAttributes.Variables {
+		key := strings.ToUpper(strings.TrimSpace(v.Key))
+		switch key {
+		case "OPS_AGENT_ENV", "CI_ENVIRONMENT_NAME", "DEPLOY_ENV", "ENVIRONMENT":
+			if value := strings.TrimSpace(v.Value); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func gitlabKindForEvent(eventType string, payload gitlabChangeWebhook) string {
+	switch strings.ToLower(strings.TrimSpace(firstNonEmptyString(payload.ObjectKind, eventType))) {
+	case "pipeline":
+		if gitlabEnvFromPayload(payload) != "" {
+			return "deploy"
+		}
+		return "change"
+	case "release":
+		return "release"
+	default:
+		return "change"
+	}
+}
+
+func gitlabActionForEvent(eventType string, payload gitlabChangeWebhook) string {
+	switch gitlabKindForEvent(eventType, payload) {
+	case "deploy":
+		return "deploy_event"
+	case "release":
+		return "release_event"
+	default:
+		return "change_event"
+	}
+}
+
+func gitlabStatusForEvent(eventType string, payload gitlabChangeWebhook) string {
+	switch strings.ToLower(strings.TrimSpace(firstNonEmptyString(payload.ObjectKind, eventType))) {
+	case "pipeline":
+		return normalizeGitlabPipelineStatus(payload.ObjectAttributes.Status, payload.ObjectAttributes.DetailedStatus)
+	case "release":
+		if strings.EqualFold(strings.TrimSpace(payload.Release.Action), "create") {
+			return "ok"
+		}
+		return normalizeChangeStatus(payload.Release.Action)
+	default:
+		return "ok"
+	}
+}
+
+func normalizeGitlabPipelineStatus(status, detailed string) string {
+	status = strings.ToLower(strings.TrimSpace(firstNonEmptyString(status, detailed)))
+	switch status {
+	case "success":
+		return "ok"
+	case "failed":
+		return "failed"
+	case "canceled", "cancelled", "skipped":
+		return "canceled"
+	case "running", "pending", "preparing", "waiting_for_resource", "created", "manual":
+		return "started"
+	default:
+		return normalizeChangeStatus(status)
+	}
+}
+
+func gitlabEventDetails(eventType string, payload gitlabChangeWebhook) (reference, link string, occurredAt time.Time, message string) {
+	project := firstNonEmptyString(payload.Project.PathWithNamespace, payload.Project.Name, "unknown project")
+	switch strings.ToLower(strings.TrimSpace(firstNonEmptyString(payload.ObjectKind, eventType))) {
+	case "pipeline":
+		reference = firstNonEmptyString(payload.ObjectAttributes.SHA, payload.CheckoutSHA, payload.After, payload.ObjectAttributes.Ref)
+		link = firstNonEmptyString(payload.ObjectAttributes.URL, payload.Project.WebURL)
+		occurredAt = firstNonZeroTime(parseTimestamp(payload.ObjectAttributes.FinishedAt), parseTimestamp(payload.ObjectAttributes.CreatedAt))
+		message = fmt.Sprintf("gitlab pipeline %s project=%s ref=%s source=%s", defaultString(payload.ObjectAttributes.Status, "unknown"), project, defaultString(payload.ObjectAttributes.Ref, "unknown"), defaultString(payload.ObjectAttributes.Source, "unknown"))
+	case "release":
+		reference = firstNonEmptyString(payload.Release.Tag, payload.Ref)
+		link = payload.Project.WebURL
+		occurredAt = payload.Release.ReleasedAt
+		message = fmt.Sprintf("gitlab release %s project=%s tag=%s", defaultString(payload.Release.Action, "published"), project, defaultString(payload.Release.Tag, "unknown"))
+	default:
+		reference = firstNonEmptyString(payload.CheckoutSHA, payload.After, payload.Ref)
+		link = payload.Project.WebURL
+		message = fmt.Sprintf("gitlab change event %s project=%s", defaultString(eventType, "unknown"), project)
+	}
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
+	return reference, link, occurredAt, message
+}
+
+func parseTimestamp(v string) time.Time {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339, v); err == nil {
+		return parsed.UTC()
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, v); err == nil {
+		return parsed.UTC()
+	}
+	return time.Time{}
+}
+
+func firstNonZeroTime(items ...time.Time) time.Time {
+	for _, item := range items {
+		if !item.IsZero() {
+			return item.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+func firstNonEmptyString(items ...string) string {
+	for _, item := range items {
+		if strings.TrimSpace(item) != "" {
+			return strings.TrimSpace(item)
+		}
+	}
+	return ""
 }
 
 func (s *server) handleIncidentStats(w http.ResponseWriter, r *http.Request) {

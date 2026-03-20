@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ops-agent API
-  version: 0.3.8
+  version: 0.3.9
 servers:
   - url: http://127.0.0.1:8090
 components:
@@ -98,6 +98,30 @@ paths:
                   type: string
       responses:
         '200': { description: Change event stored }
+  /changes/github:
+    post:
+      summary: Ingest a GitHub deployment or workflow webhook as a change event
+      parameters:
+        - in: query
+          name: env
+          schema: { type: string, description: Optional env override when the webhook payload does not carry one }
+        - in: query
+          name: project
+          schema: { type: string }
+      responses:
+        '200': { description: GitHub webhook stored as change event }
+  /changes/gitlab:
+    post:
+      summary: Ingest a GitLab pipeline or release webhook as a change event
+      parameters:
+        - in: query
+          name: env
+          schema: { type: string, description: Optional env override when the webhook payload does not carry one }
+        - in: query
+          name: project
+          schema: { type: string }
+      responses:
+        '200': { description: GitLab webhook stored as change event }
   /changes/recent:
     get:
       summary: List recent change/deploy events from audit

@@ -232,6 +232,113 @@ func TestHandleChangeEventAndRecentChanges(t *testing.T) {
 	}
 }
 
+func TestHandleGitHubChangeWebhook(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "environments.yaml")
+	content := "environments:\n  prod:\n    project: core\n    hosts: []\n    services: []\n    dependencies: []\n"
+	if err := os.WriteFile(envFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	auditFile := filepath.Join(dir, "audit.jsonl")
+	s := &server{
+		envFile:    envFile,
+		auditStore: audit.JSONLStore{Path: auditFile},
+	}
+	body := `{
+		"action":"created",
+		"repository":{"full_name":"org/api","html_url":"https://github.com/org/api"},
+		"sender":{"login":"octocat"},
+		"deployment":{"environment":"prod","sha":"abc123","ref":"refs/heads/main","description":"ship api"},
+		"deployment_status":{"state":"success","environment_url":"https://api.example.com","updated_at":"2026-03-20T12:00:00Z"}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/changes/github", bytes.NewBufferString(body))
+	req.Header.Set("X-GitHub-Event", "deployment_status")
+	rr := httptest.NewRecorder()
+
+	s.handleGitHubChangeWebhook(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var evt audit.Event
+	if err := json.NewDecoder(rr.Body).Decode(&evt); err != nil {
+		t.Fatal(err)
+	}
+	if evt.Project != "core" || evt.Env != "prod" || evt.Action != "deploy_event" || evt.Status != "ok" {
+		t.Fatalf("unexpected github change event: %+v", evt)
+	}
+	if evt.Actor != "octocat" || evt.Target != "org/api" {
+		t.Fatalf("unexpected github actor/target: %+v", evt)
+	}
+	if evt.Time.Format(time.RFC3339) != "2026-03-20T12:00:00Z" {
+		t.Fatalf("unexpected github event time: %s", evt.Time.Format(time.RFC3339))
+	}
+}
+
+func TestHandleGitLabChangeWebhook(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "environments.yaml")
+	content := "environments:\n  prod:\n    project: core\n    hosts: []\n    services: []\n    dependencies: []\n"
+	if err := os.WriteFile(envFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	auditFile := filepath.Join(dir, "audit.jsonl")
+	s := &server{
+		envFile:    envFile,
+		auditStore: audit.JSONLStore{Path: auditFile},
+	}
+	body := `{
+		"object_kind":"pipeline",
+		"user_name":"gitlab-bot",
+		"project":{"path_with_namespace":"group/api","web_url":"https://gitlab.example/group/api"},
+		"object_attributes":{
+			"ref":"main",
+			"sha":"def456",
+			"status":"success",
+			"source":"push",
+			"url":"https://gitlab.example/group/api/-/pipelines/1",
+			"variables":[{"key":"CI_ENVIRONMENT_NAME","value":"prod"}],
+			"finished_at":"2026-03-20T13:00:00Z"
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/changes/gitlab", bytes.NewBufferString(body))
+	req.Header.Set("X-Gitlab-Event", "Pipeline Hook")
+	rr := httptest.NewRecorder()
+
+	s.handleGitLabChangeWebhook(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var evt audit.Event
+	if err := json.NewDecoder(rr.Body).Decode(&evt); err != nil {
+		t.Fatal(err)
+	}
+	if evt.Project != "core" || evt.Env != "prod" || evt.Action != "deploy_event" || evt.Status != "ok" {
+		t.Fatalf("unexpected gitlab change event: %+v", evt)
+	}
+	if evt.Actor != "gitlab-bot" || evt.Target != "group/api" {
+		t.Fatalf("unexpected gitlab actor/target: %+v", evt)
+	}
+	if evt.Time.Format(time.RFC3339) != "2026-03-20T13:00:00Z" {
+		t.Fatalf("unexpected gitlab event time: %s", evt.Time.Format(time.RFC3339))
+	}
+}
+
+func TestAuthorizedPathAllowsDedicatedChangeTokenOnlyOnIngest(t *testing.T) {
+	s := &server{token: "api-token", changeToken: "change-token"}
+
+	req := httptest.NewRequest(http.MethodPost, "/changes/github", nil)
+	req.Header.Set("Authorization", "Bearer change-token")
+	if !s.authorizedPath(req) {
+		t.Fatal("expected change token to authorize webhook ingest")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/changes/recent", nil)
+	req.Header.Set("Authorization", "Bearer change-token")
+	if s.authorizedPath(req) {
+		t.Fatal("expected change token to be rejected for read endpoint")
+	}
+}
+
 func TestHandlePrometheusQuery(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "environments.yaml")
