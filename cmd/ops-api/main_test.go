@@ -170,6 +170,68 @@ func TestHandleIncidentTimeline(t *testing.T) {
 	}
 }
 
+func TestHandleChangeEventAndRecentChanges(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "environments.yaml")
+	content := `environments:
+  prod:
+    project: core
+    hosts: []
+    services: []
+    dependencies: []
+`
+	if err := os.WriteFile(envFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	auditFile := filepath.Join(dir, "audit.jsonl")
+	s := &server{
+		envFile:    envFile,
+		auditStore: audit.JSONLStore{Path: auditFile},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/changes/events", bytes.NewBufferString(`{
+		"kind":"deploy",
+		"env":"prod",
+		"actor":"ci:github-actions",
+		"target":"service/api",
+		"message":"release 2026.03.20",
+		"reference":"git:abc123",
+		"url":"https://ci.example/run/1"
+	}`))
+	rr := httptest.NewRecorder()
+	s.handleChangeEvent(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var evt audit.Event
+	if err := json.NewDecoder(rr.Body).Decode(&evt); err != nil {
+		t.Fatal(err)
+	}
+	if evt.Project != "core" || evt.Env != "prod" || evt.Action != "deploy_event" || evt.Actor != "ci:github-actions" {
+		t.Fatalf("unexpected change event response: %+v", evt)
+	}
+	if !strings.Contains(evt.Message, "ref=git:abc123") || !strings.Contains(evt.Message, "https://ci.example/run/1") {
+		t.Fatalf("expected metadata in message, got %q", evt.Message)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/changes/recent?env=prod&minutes=60&limit=10", nil)
+	rr = httptest.NewRecorder()
+	s.handleRecentChanges(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp changesResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 1 || len(resp.Items) != 1 {
+		t.Fatalf("unexpected changes response: %+v", resp)
+	}
+	if resp.Items[0].Kind != "change" || resp.Items[0].Action != "deploy_event" || resp.Items[0].Actor != "ci:github-actions" {
+		t.Fatalf("unexpected change item: %+v", resp.Items[0])
+	}
+}
+
 func TestHandlePrometheusQuery(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, "environments.yaml")

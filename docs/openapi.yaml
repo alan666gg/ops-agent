@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ops-agent API
-  version: 0.3.7
+  version: 0.3.8
 servers:
   - url: http://127.0.0.1:8090
 components:
@@ -61,6 +61,61 @@ paths:
           schema: { type: string, description: Optional range step duration such as 60s or 5m }
       responses:
         '200': { description: Prometheus query result }
+  /changes/events:
+    post:
+      summary: Ingest one external change or deploy event into audit/timeline correlation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [env, message]
+              properties:
+                kind:
+                  type: string
+                  description: Optional change kind such as deploy, release, rollback, maintenance, config, or change
+                action:
+                  type: string
+                  description: Optional explicit action name; defaults to <kind>_event
+                actor:
+                  type: string
+                project:
+                  type: string
+                env:
+                  type: string
+                target:
+                  type: string
+                target_host:
+                  type: string
+                status:
+                  type: string
+                message:
+                  type: string
+                reference:
+                  type: string
+                url:
+                  type: string
+      responses:
+        '200': { description: Change event stored }
+  /changes/recent:
+    get:
+      summary: List recent change/deploy events from audit
+      parameters:
+        - in: query
+          name: project
+          schema: { type: string }
+        - in: query
+          name: env
+          schema: { type: string }
+        - in: query
+          name: minutes
+          schema: { type: integer, default: 120 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20 }
+      responses:
+        '200': { description: Recent change events }
   /alerts/alertmanager:
     post:
       summary: Ingest Alertmanager webhook alerts into the incident lifecycle

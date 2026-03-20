@@ -144,6 +144,7 @@ If an incident originated from Alertmanager and the API is started with `--alert
 Use `OPS_ALERTMANAGER_API_TOKEN` when your Alertmanager API requires authentication, and tune the silence window with `--alertmanager-silence-duration`.
 Created silences are now stored as structured incident state and shown back in `/incidents/get`, Telegram incident detail, and timelines. You can later expire one through `/incidents/unsilence` or Telegram `/unsilence`.
 `ops-api` can also periodically reconcile stored Alertmanager silence state with `--alertmanager-refresh-interval` and `--alertmanager-refresh-timeout`, so manual silence expiry or external changes eventually flow back into the local incident record. You can trigger the same refresh on demand with `POST /incidents/reconcile-alertmanager`.
+For deploy/change correlation, external systems can also post `POST /changes/events` with `env`, `message`, and optional `kind/reference/url`; those markers immediately become visible in `/changes/recent` and incident timelines.
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
 
@@ -246,6 +247,11 @@ curl -s -X POST http://127.0.0.1:8090/actions/approve \
 
 curl -s "http://127.0.0.1:8090/audit/tail?file=api.jsonl&limit=20" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60&project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s -X POST http://127.0.0.1:8090/changes/events \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -d '{"kind":"deploy","env":"prod","actor":"ci:github-actions","target":"service/api","message":"release 2026.03.20","reference":"git:abc123","url":"https://ci.example/run/1"}'
+curl -s "http://127.0.0.1:8090/changes/recent?project=core&env=prod&minutes=120" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/active?project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/get?id=ops-scheduler|core|prod" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/timeline?id=ops-scheduler|core|prod&minutes=90" -H "Authorization: Bearer $OPS_API_TOKEN"

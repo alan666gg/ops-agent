@@ -47,3 +47,10 @@ func TestTimelineBuilderCorrelatesChangesNearIncidentStart(t *testing.T) {
 		t.Fatalf("unexpected correlated change entry: %+v", timeline.CorrelatedChanges[0])
 	}
 }
+
+func TestEventKindTreatsExternalDeployAsChange(t *testing.T) {
+	evt := audit.Event{Action: "deploy_event", Status: "ok"}
+	if got := EventKind(evt); got != "change" {
+		t.Fatalf("expected deploy_event to classify as change, got %q", got)
+	}
+}

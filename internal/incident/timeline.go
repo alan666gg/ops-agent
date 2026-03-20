@@ -100,7 +100,7 @@ func (b TimelineBuilder) Build(record Record, window time.Duration) (Timeline, e
 }
 
 func timelineEntry(evt audit.Event, record Record) TimelineEntry {
-	kind := classifyEvent(evt)
+	kind := EventKind(evt)
 	if kind == "" {
 		return TimelineEntry{}
 	}
@@ -118,7 +118,7 @@ func timelineEntry(evt audit.Event, record Record) TimelineEntry {
 	return entry
 }
 
-func classifyEvent(evt audit.Event) string {
+func EventKind(evt audit.Event) string {
 	actionName := strings.TrimSpace(evt.Action)
 	switch actionName {
 	case "health_cycle", "health_run", "slo_eval", "alertmanager_receive":
@@ -128,6 +128,9 @@ func classifyEvent(evt audit.Event) string {
 	case "notify":
 		return ""
 	case "discovery_apply", "discover_host":
+		return "change"
+	}
+	if isExternalChangeAction(actionName) {
 		return "change"
 	}
 	if actions.IsMutating(actionName) {
@@ -140,6 +143,25 @@ func classifyEvent(evt audit.Event) string {
 		return "chatops"
 	}
 	return "system"
+}
+
+func isExternalChangeAction(actionName string) bool {
+	actionName = strings.ToLower(strings.TrimSpace(actionName))
+	switch {
+	case strings.HasPrefix(actionName, "change_"),
+		strings.HasPrefix(actionName, "deploy_"),
+		strings.HasPrefix(actionName, "release_"),
+		strings.HasPrefix(actionName, "rollback_"),
+		strings.HasPrefix(actionName, "maintenance_"),
+		strings.HasPrefix(actionName, "config_"):
+		return true
+	}
+	switch actionName {
+	case "change", "deploy", "release", "rollback", "maintenance", "config_change":
+		return true
+	default:
+		return false
+	}
 }
 
 func likelyCorrelated(at, firstSeen time.Time) bool {

@@ -221,6 +221,28 @@ type alertmanagerIngestResponse struct {
 	Items  []incident.Record `json:"items,omitempty"`
 }
 
+type changeEventRequest struct {
+	Kind       string `json:"kind,omitempty"`
+	Action     string `json:"action,omitempty"`
+	Actor      string `json:"actor,omitempty"`
+	Project    string `json:"project,omitempty"`
+	Env        string `json:"env"`
+	Target     string `json:"target,omitempty"`
+	TargetHost string `json:"target_host,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Message    string `json:"message"`
+	Reference  string `json:"reference,omitempty"`
+	URL        string `json:"url,omitempty"`
+}
+
+type changesResponse struct {
+	WindowMinutes int                      `json:"window_minutes"`
+	Projects      []string                 `json:"projects,omitempty"`
+	Env           string                   `json:"env,omitempty"`
+	Count         int                      `json:"count"`
+	Items         []incident.TimelineEntry `json:"items"`
+}
+
 func main() {
 	addr := flag.String("addr", ":8090", "http listen addr")
 	envFile := flag.String("env-file", "configs/environments.yaml", "path to environments yaml")
@@ -346,6 +368,8 @@ func main() {
 	mux.HandleFunc("/audit/tail", s.handleTailAudit)
 	mux.HandleFunc("/alerts/alertmanager", s.handleAlertmanagerWebhook)
 	mux.HandleFunc("/prometheus/query", s.handlePrometheusQuery)
+	mux.HandleFunc("/changes/events", s.handleChangeEvent)
+	mux.HandleFunc("/changes/recent", s.handleRecentChanges)
 	mux.HandleFunc("/incidents/summary", s.handleIncidentSummary)
 	mux.HandleFunc("/incidents/stats", s.handleIncidentStats)
 	mux.HandleFunc("/incidents/active", s.handleActiveIncidents)
@@ -1125,6 +1149,205 @@ func (s *server) handlePrometheusQuery(w http.ResponseWriter, r *http.Request) {
 		"env":     envName,
 		"data":    out,
 	})
+}
+
+func (s *server) handleChangeEvent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var req changeEventRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	evt, err := s.buildChangeAuditEvent(req)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if err := s.auditStore.Append(evt); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(evt)
+}
+
+func (s *server) handleRecentChanges(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	window := 120
+	if v := strings.TrimSpace(r.URL.Query().Get("minutes")); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &window); err != nil || window <= 0 {
+			http.Error(w, `{"error":"invalid minutes"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	limit := 20
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &limit); err != nil || limit <= 0 || limit > 200 {
+			http.Error(w, `{"error":"invalid limit"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	projects := queryProjects(r)
+	envName := strings.TrimSpace(r.URL.Query().Get("env"))
+	events, err := s.auditStore.List(audit.Query{
+		Since:    time.Now().UTC().Add(-time.Duration(window) * time.Minute),
+		Projects: projects,
+		Env:      envName,
+		Limit:    maxInt(limit*10, 200),
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	items := make([]incident.TimelineEntry, 0, limit)
+	for _, evt := range events {
+		if incident.EventKind(evt) != "change" {
+			continue
+		}
+		items = append(items, incident.TimelineEntry{
+			Time:       evt.Time,
+			Kind:       "change",
+			Action:     strings.TrimSpace(evt.Action),
+			Status:     strings.TrimSpace(evt.Status),
+			Actor:      strings.TrimSpace(evt.Actor),
+			Target:     strings.TrimSpace(evt.Target),
+			TargetHost: strings.TrimSpace(evt.TargetHost),
+			Message:    strings.TrimSpace(evt.Message),
+		})
+		if len(items) >= limit {
+			break
+		}
+	}
+	_ = json.NewEncoder(w).Encode(changesResponse{
+		WindowMinutes: window,
+		Projects:      projects,
+		Env:           envName,
+		Count:         len(items),
+		Items:         items,
+	})
+}
+
+func (s *server) buildChangeAuditEvent(req changeEventRequest) (audit.Event, error) {
+	envName := strings.TrimSpace(req.Env)
+	if envName == "" {
+		return audit.Event{}, fmt.Errorf("env required")
+	}
+	project := strings.TrimSpace(req.Project)
+	if project == "" {
+		if inferred, err := s.projectForEnv(envName); err == nil {
+			project = inferred
+		}
+	}
+	if project == "" {
+		project = "default"
+	}
+	action := normalizeChangeAction(req.Kind, req.Action)
+	status := normalizeChangeStatus(req.Status)
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		return audit.Event{}, fmt.Errorf("message required")
+	}
+	message = appendChangeMetadata(message, strings.TrimSpace(req.Reference), strings.TrimSpace(req.URL))
+	actor := strings.TrimSpace(req.Actor)
+	if actor == "" {
+		actor = "external-change"
+	}
+	target := strings.TrimSpace(req.Target)
+	if target == "" {
+		target = envName
+	}
+	if len(target) > 200 || strings.Contains(target, "\n") {
+		return audit.Event{}, fmt.Errorf("invalid target")
+	}
+	targetHost := strings.TrimSpace(req.TargetHost)
+	if len(targetHost) > 200 || strings.Contains(targetHost, "\n") {
+		return audit.Event{}, fmt.Errorf("invalid target_host")
+	}
+	if len(actor) > 200 || strings.Contains(actor, "\n") {
+		return audit.Event{}, fmt.Errorf("invalid actor")
+	}
+	return audit.Event{
+		Time:       time.Now().UTC(),
+		Actor:      actor,
+		Action:     action,
+		Project:    project,
+		Env:        envName,
+		TargetHost: targetHost,
+		Target:     target,
+		Status:     status,
+		Message:    message,
+	}, nil
+}
+
+func normalizeChangeAction(kind, action string) string {
+	action = strings.ToLower(strings.TrimSpace(action))
+	if action != "" {
+		return sanitizeChangeToken(action, "change_event")
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch kind {
+	case "deploy", "release", "rollback", "maintenance", "config", "change":
+		return kind + "_event"
+	default:
+		return "change_event"
+	}
+}
+
+func sanitizeChangeToken(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range strings.ToLower(strings.TrimSpace(v)) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if !lastUnderscore {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return fallback
+	}
+	return out
+}
+
+func normalizeChangeStatus(v string) string {
+	status := strings.ToLower(strings.TrimSpace(v))
+	if status == "" {
+		return "ok"
+	}
+	switch status {
+	case "planned", "started", "ok", "failed", "rolled_back", "canceled":
+		return status
+	default:
+		return sanitizeChangeToken(status, "ok")
+	}
+}
+
+func appendChangeMetadata(message, reference, link string) string {
+	parts := []string{strings.TrimSpace(message)}
+	if reference != "" {
+		parts = append(parts, "ref="+reference)
+	}
+	if link != "" {
+		parts = append(parts, link)
+	}
+	return strings.Join(parts, " | ")
 }
 
 func (s *server) handleIncidentStats(w http.ResponseWriter, r *http.Request) {
@@ -2007,6 +2230,13 @@ func queryProjects(r *http.Request) []string {
 		}
 	}
 	return out
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func tailLines(path string, limit int) ([]string, error) {
