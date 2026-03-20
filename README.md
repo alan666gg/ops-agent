@@ -10,6 +10,12 @@ Internal Ops Agent scaffold with policy-gated runbooks, approvals, and audit tra
 - `services/` api/scheduler/telegram usage notes
 - `docs/` architecture and roadmap
 
+Delivery assets:
+
+- [Delivery Guide](/Users/zhangza/code/agent/ops-agent/docs/DELIVERY.md)
+- [Docker Compose bundle](/Users/zhangza/code/agent/ops-agent/deploy/docker-compose.yaml)
+- [systemd units](/Users/zhangza/code/agent/ops-agent/deploy/systemd/ops-api.service)
+
 ## Quick start
 
 1. Fill `configs/environments.yaml`
@@ -34,6 +40,13 @@ Config validation:
 ```bash
 go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml
 go run ./cmd/ops-agent validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml
+```
+
+Smoke test a running control plane:
+
+```bash
+export OPS_API_TOKEN=change-me
+go run ./cmd/ops-agent smoke --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --env prod --env-file configs/environments.yaml
 ```
 
 Prometheus query:

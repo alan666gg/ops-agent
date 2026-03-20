@@ -2,6 +2,8 @@
 
 Runs periodic health checks and writes audit events.
 
+For packaged deployment examples, see [Delivery Guide](/Users/zhangza/code/agent/ops-agent/docs/DELIVERY.md).
+
 Current command:
 
 ```bash

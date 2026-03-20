@@ -1,0 +1,12 @@
+.git
+.github
+audit
+tmp
+dist
+bin
+*.db
+*.sqlite
+*.jsonl
+*.log
+coverage.out
+.DS_Store

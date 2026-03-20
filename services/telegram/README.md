@@ -2,6 +2,8 @@
 
 Telegram ChatOps entrypoint for `ops-agent`.
 
+For packaged deployment examples, see [Delivery Guide](/Users/zhangza/code/agent/ops-agent/docs/DELIVERY.md).
+
 Run:
 
 ```bash

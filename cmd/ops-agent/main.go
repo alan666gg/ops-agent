@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +41,8 @@ func main() {
 		runPromQL(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "smoke":
+		runSmoke(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -52,6 +56,7 @@ func usage() {
 	fmt.Println("  discover --env-file configs/environments.yaml --env test --host test-app-1 --format yaml --apply")
 	fmt.Println("  promql --env-file configs/environments.yaml --env test --query 'up' --minutes 30")
 	fmt.Println("  validate --env-file configs/environments.yaml --policy configs/policies.yaml --notify-config configs/notifications.yaml --chatops-config configs/chatops.yaml")
+	fmt.Println("  smoke --api-base http://127.0.0.1:8090 --api-token change-me --env test --env-file configs/environments.yaml")
 }
 
 func runHealth(args []string) {
@@ -290,6 +295,100 @@ func runDiscover(args []string) {
 		return
 	}
 	fmt.Println(string(payload))
+}
+
+func runSmoke(args []string) {
+	fs := flag.NewFlagSet("smoke", flag.ExitOnError)
+	apiBase := fs.String("api-base", "http://127.0.0.1:8090", "ops-api base url")
+	apiToken := fs.String("api-token", os.Getenv("OPS_API_TOKEN"), "ops-api bearer token")
+	envName := fs.String("env", "test", "environment name to probe")
+	envFile := fs.String("env-file", "configs/environments.yaml", "environment config file")
+	timeout := fs.Duration("timeout", 12*time.Second, "per-request timeout")
+	promQuery := fs.String("prom-query", "up", "instant PromQL query used when the environment enables Prometheus")
+	requireHealthy := fs.Bool("require-healthy", false, "exit non-zero when /health/run returns warn/fail")
+	skipPrometheus := fs.Bool("skip-prometheus", false, "skip Prometheus smoke checks even when the environment config enables them")
+	_ = fs.Parse(args)
+
+	if strings.TrimSpace(*apiToken) == "" {
+		fmt.Println("api-token is required")
+		os.Exit(1)
+	}
+
+	client := &http.Client{Timeout: *timeout}
+	if err := smokeReady(client, strings.TrimSpace(*apiBase)); err != nil {
+		fmt.Println("ready check failed:", err)
+		os.Exit(1)
+	}
+	fmt.Println("ready check ok")
+
+	api := chatops.OpsAPIClient{
+		BaseURL: strings.TrimSpace(*apiBase),
+		Token:   strings.TrimSpace(*apiToken),
+		Client:  client,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	health, err := api.Health(ctx, *envName)
+	if err != nil {
+		fmt.Println("health check failed:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("health check ok: env=%s project=%s status=%s summary=%s\n", health.Env, defaultString(health.Project, "default"), health.Status, health.Summary)
+	if *requireHealthy && health.Status != "ok" {
+		fmt.Println("health status is not ok")
+		os.Exit(2)
+	}
+
+	stats, err := api.IncidentStats(ctx, *envName, nil)
+	if err != nil {
+		fmt.Println("incident stats failed:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("incident stats ok: open=%d resolved=%d avg_mtta=%.1fs avg_mttr=%.1fs\n",
+		stats.Summary.OpenRecords,
+		stats.Summary.ResolvedRecords,
+		stats.Summary.AvgMTTASeconds,
+		stats.Summary.AvgMTTRSeconds,
+	)
+
+	if !*skipPrometheus && envPrometheusEnabled(*envFile, *envName) {
+		prom, err := api.PrometheusQuery(ctx, *envName, *promQuery, 0, 0)
+		if err != nil {
+			fmt.Println("prometheus smoke failed:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("prometheus smoke ok: %s\n", prom.Data.Summary)
+	}
+}
+
+func smokeReady(client *http.Client, baseURL string) error {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, strings.TrimRight(baseURL, "/")+"/ready", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func envPrometheusEnabled(envFile, envName string) bool {
+	cfg, err := config.LoadEnvironments(envFile)
+	if err != nil {
+		return false
+	}
+	env, ok := cfg.Environment(envName)
+	if !ok {
+		return false
+	}
+	return env.Prometheus.WithDefaults().Enabled()
 }
 
 func runPromQL(args []string) {

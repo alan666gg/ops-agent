@@ -1,0 +1,21 @@
+[Unit]
+Description=ops-agent API control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ops-agent
+Group=ops-agent
+WorkingDirectory=/opt/ops-agent
+EnvironmentFile=/etc/ops-agent/ops-agent.env
+ExecStart=/usr/local/bin/ops-api --addr :8090 --env-file /etc/ops-agent/environments.yaml --policy /etc/ops-agent/policies.yaml --audit /var/lib/ops-agent/api.db --audit-driver sqlite --incident-state-file /var/lib/ops-agent/incidents.db --pending-driver sqlite --pending-file /var/lib/ops-agent/pending-actions.db --notify-config /etc/ops-agent/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2 --alertmanager-sync-ack --alertmanager-silence-duration 2h --alertmanager-refresh-interval 5m
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/ops-agent
+
+[Install]
+WantedBy=multi-user.target

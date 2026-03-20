@@ -2,6 +2,8 @@
 
 Minimal HTTP API for running health checks, policy-gated actions, approvals, and bounded audit tail reads.
 
+For packaged deployment examples, see [Delivery Guide](/Users/zhangza/code/agent/ops-agent/docs/DELIVERY.md).
+
 Run:
 
 ```bash
@@ -10,6 +12,12 @@ export OPS_ALERT_TOKEN=change-me-alerts
 export OPS_CHANGE_TOKEN=change-me-changes
 export OPS_ALERTMANAGER_API_TOKEN=change-me-alertmanager-api
 go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2 --alertmanager-sync-ack --alertmanager-silence-duration 2h --alertmanager-refresh-interval 5m --change-token "$OPS_CHANGE_TOKEN"
+```
+
+Smoke test after startup:
+
+```bash
+go run ./cmd/ops-agent smoke --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --env prod --env-file configs/environments.yaml
 ```
 
 Endpoints:

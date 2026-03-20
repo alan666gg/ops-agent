@@ -1,0 +1,127 @@
+version: "3.9"
+
+services:
+  ops-api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: ops-agent:latest
+    restart: unless-stopped
+    command:
+      - ops-api
+      - --addr
+      - :8090
+      - --env-file
+      - /app/configs/environments.yaml
+      - --policy
+      - /app/configs/policies.yaml
+      - --audit
+      - /app/audit/api.db
+      - --audit-driver
+      - sqlite
+      - --incident-state-file
+      - /app/audit/incidents.db
+      - --pending-driver
+      - sqlite
+      - --pending-file
+      - /app/audit/pending-actions.db
+      - --notify-config
+      - /app/configs/notifications.yaml
+      - --notify-trigger-after
+      - "2"
+      - --notify-recovery-after
+      - "2"
+      - --alertmanager-sync-ack
+      - --alertmanager-silence-duration
+      - 2h
+      - --alertmanager-refresh-interval
+      - 5m
+    environment:
+      OPS_API_TOKEN: ${OPS_API_TOKEN:?set OPS_API_TOKEN}
+      OPS_ALERT_TOKEN: ${OPS_ALERT_TOKEN:-}
+      OPS_CHANGE_TOKEN: ${OPS_CHANGE_TOKEN:-}
+      OPS_ALERTMANAGER_API_TOKEN: ${OPS_ALERTMANAGER_API_TOKEN:-}
+    ports:
+      - "${OPS_API_PORT:-8090}:8090"
+    volumes:
+      - ../configs:/app/configs
+      - ../runbooks:/app/runbooks
+      - ../audit:/app/audit
+      # Uncomment when host discovery / SSH runbooks should use a real control-plane key:
+      # - ${OPS_SSH_DIR}:/root/.ssh:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/ready"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  ops-scheduler:
+    image: ops-agent:latest
+    restart: unless-stopped
+    depends_on:
+      ops-api:
+        condition: service_healthy
+    command:
+      - ops-scheduler
+      - --env
+      - ${OPS_SCHEDULER_ENV:-prod}
+      - --env-file
+      - /app/configs/environments.yaml
+      - --policy
+      - /app/configs/policies.yaml
+      - --audit
+      - /app/audit/scheduler.db
+      - --audit-driver
+      - sqlite
+      - --incident-state-file
+      - /app/audit/incidents.db
+      - --notify-config
+      - /app/configs/notifications.yaml
+      - --notify-trigger-after
+      - "2"
+      - --notify-recovery-after
+      - "2"
+      - --discover-interval
+      - ${OPS_DISCOVER_INTERVAL:-6h}
+    volumes:
+      - ../configs:/app/configs
+      - ../runbooks:/app/runbooks
+      - ../audit:/app/audit
+      # Uncomment when scheduler-driven discovery or SSH host checks need a real key:
+      # - ${OPS_SSH_DIR}:/root/.ssh:ro
+
+  ops-telegram:
+    image: ops-agent:latest
+    restart: unless-stopped
+    depends_on:
+      ops-api:
+        condition: service_healthy
+    command:
+      - ops-telegram
+      - --api-base
+      - http://ops-api:8090
+      - --api-token
+      - ${OPS_API_TOKEN:?set OPS_API_TOKEN}
+      - --env-file
+      - /app/configs/environments.yaml
+      - --bot-token
+      - ${OPS_TG_BOT_TOKEN:?set OPS_TG_BOT_TOKEN}
+      - --chat-id
+      - ${OPS_TG_CHAT_ID:?set OPS_TG_CHAT_ID}
+      - --chatops-config
+      - /app/configs/chatops.yaml
+      - --audit
+      - /app/audit/telegram.jsonl
+      - --offset-file
+      - /app/audit/telegram-offset.txt
+      - --llm-state-file
+      - /app/audit/telegram-openai-response.txt
+      - --llm-confirm-file
+      - /app/audit/telegram-openai-confirmation.json
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4}
+    volumes:
+      - ../configs:/app/configs
+      - ../audit:/app/audit
