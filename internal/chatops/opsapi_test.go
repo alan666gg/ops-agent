@@ -28,6 +28,16 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 				Env:     "prod",
 				Data:    promapi.QueryResponse{Query: "up", ResultType: "vector", Summary: "vector query returned 1 series"},
 			}), nil
+		case "/changes/recent":
+			return jsonResponse(http.StatusOK, RecentChangesResponse{
+				WindowMinutes: 120,
+				Projects:      []string{"core"},
+				Env:           "prod",
+				Count:         1,
+				Items: []incident.TimelineEntry{
+					{Kind: "change", Action: "deploy_release", Status: "ok", Actor: "ci:github-actions", Target: "service/api"},
+				},
+			}), nil
 		case "/incidents/active":
 			return jsonResponse(http.StatusOK, IncidentListResponse{Count: 1, Items: []incident.Record{{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"}}}), nil
 		case "/incidents/get":
@@ -66,6 +76,13 @@ func TestOpsAPIClientHealthAndApprove(t *testing.T) {
 	}
 	if prom.Project != "core" || prom.Data.Query != "up" {
 		t.Fatalf("unexpected prometheus response: %+v", prom)
+	}
+	changes, err := api.RecentChanges(context.Background(), 120, "prod", []string{"core"}, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes.Count != 1 || len(changes.Items) != 1 || changes.Items[0].Action != "deploy_release" {
+		t.Fatalf("unexpected changes response: %+v", changes)
 	}
 	item, err := api.GetAction(context.Background(), "r1")
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/audit"
 	"github.com/alan666gg/ops-agent/internal/chatops"
 	"github.com/alan666gg/ops-agent/internal/config"
+	"github.com/alan666gg/ops-agent/internal/incident"
 )
 
 func main() {
@@ -245,6 +246,26 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 			return "incident stats failed: " + err.Error(), nil
 		}
 		return chatops.FormatIncidentStats(resp), nil
+	case "changes":
+		var projects []string
+		if strings.TrimSpace(cmd.Env) != "" {
+			project, err := authorizeCommandEnv(agent, actor, cmd.Env)
+			if err != nil {
+				return "recent changes denied: " + err.Error(), nil
+			}
+			projects = []string{project}
+		} else {
+			var err error
+			projects, err = agent.Authorizer.AllowedProjects(actor)
+			if err != nil {
+				return "recent changes denied: " + err.Error(), nil
+			}
+		}
+		resp, err := api.RecentChanges(ctx, cmd.Minutes, cmd.Env, projects, 10)
+		if err != nil {
+			return "recent changes failed: " + err.Error(), nil
+		}
+		return chatops.FormatRecentChanges(resp), nil
 	case "incidents":
 		projects, err := agent.Authorizer.AllowedProjects(actor)
 		if err != nil {
@@ -273,7 +294,7 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
 			return "incident detail denied: " + err.Error(), nil
 		}
-		return chatops.FormatIncidentDetail(item), chatops.IncidentMarkup(item)
+		return formatIncidentReply(ctx, api, item), chatops.IncidentMarkup(item)
 	case "timeline":
 		item, err := api.GetIncidentTimeline(ctx, cmd.IncidentID, cmd.Minutes)
 		if err != nil {
@@ -350,7 +371,7 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "ack failed: " + err.Error(), nil
 		}
-		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated)
+		return formatIncidentReply(ctx, api, updated), chatops.IncidentMarkup(updated)
 	case "unsilence":
 		item, err := api.GetIncident(ctx, cmd.IncidentID)
 		if err != nil {
@@ -363,7 +384,7 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "unsilence failed: " + err.Error(), nil
 		}
-		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated)
+		return formatIncidentReply(ctx, api, updated), chatops.IncidentMarkup(updated)
 	case "assign":
 		item, err := api.GetIncident(ctx, cmd.IncidentID)
 		if err != nil {
@@ -376,7 +397,7 @@ func executeCommand(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "assign failed: " + err.Error(), nil
 		}
-		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated)
+		return formatIncidentReply(ctx, api, updated), chatops.IncidentMarkup(updated)
 	case "request":
 		if _, err := authorizeCommandEnv(agent, actor, cmd.Env); err != nil {
 			return "request denied: " + err.Error(), nil
@@ -424,7 +445,7 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err := agent.Authorizer.AuthorizeProject(actor, item.Project); err != nil {
 			return "", nil, err
 		}
-		return chatops.FormatIncidentDetail(item), chatops.IncidentMarkup(item), nil
+		return formatIncidentReply(ctx, api, item), chatops.IncidentMarkup(item), nil
 	case strings.HasPrefix(data, "incident_timeline:"):
 		id := strings.TrimPrefix(data, "incident_timeline:")
 		item, err := api.GetIncidentTimeline(ctx, id, 90)
@@ -448,7 +469,7 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "", nil, err
 		}
-		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated), nil
+		return formatIncidentReply(ctx, api, updated), chatops.IncidentMarkup(updated), nil
 	case strings.HasPrefix(data, "incident_unsilence:"):
 		id := strings.TrimPrefix(data, "incident_unsilence:")
 		item, err := api.GetIncident(ctx, id)
@@ -462,7 +483,7 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "", nil, err
 		}
-		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated), nil
+		return formatIncidentReply(ctx, api, updated), chatops.IncidentMarkup(updated), nil
 	case strings.HasPrefix(data, "incident_assign:"):
 		id := strings.TrimPrefix(data, "incident_assign:")
 		item, err := api.GetIncident(ctx, id)
@@ -476,7 +497,7 @@ func handleCallback(ctx context.Context, api chatops.OpsAPIClient, agent chatops
 		if err != nil {
 			return "", nil, err
 		}
-		return chatops.FormatIncidentDetail(updated), chatops.IncidentMarkup(updated), nil
+		return formatIncidentReply(ctx, api, updated), chatops.IncidentMarkup(updated), nil
 	case strings.HasPrefix(data, "approve:"):
 		id := strings.TrimPrefix(data, "approve:")
 		item, err := api.GetAction(ctx, id)
@@ -566,4 +587,16 @@ func authorizeCommandEnv(agent chatops.Agent, actor, env string) (string, error)
 		return "", err
 	}
 	return project, nil
+}
+
+func formatIncidentReply(ctx context.Context, api chatops.OpsAPIClient, item incident.Record) string {
+	changes, err := recentChangesForIncident(ctx, api, item)
+	if err != nil || len(changes.Items) == 0 {
+		return chatops.FormatIncidentDetail(item)
+	}
+	return chatops.FormatIncidentDetailWithChanges(item, changes)
+}
+
+func recentChangesForIncident(ctx context.Context, api chatops.OpsAPIClient, item incident.Record) (chatops.RecentChangesResponse, error) {
+	return api.RecentChanges(ctx, 120, item.Env, []string{item.Project}, 3)
 }

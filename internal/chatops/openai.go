@@ -275,6 +275,23 @@ func (a Agent) toolSchemas() []responseTool {
 		},
 		{
 			Type:        "function",
+			Name:        "list_recent_changes",
+			Description: "List recent deploy, rollback, maintenance, config, or other change events, optionally scoped to one environment or project.",
+			Strict:      true,
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"minutes": map[string]any{"type": "integer", "minimum": 1, "maximum": 10080},
+					"limit":   map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+					"env":     map[string]any{"type": "string"},
+					"project": map[string]any{"type": "string"},
+				},
+				"required":             []string{"minutes", "limit"},
+				"additionalProperties": false,
+			},
+		},
+		{
+			Type:        "function",
 			Name:        "get_incident_summary",
 			Description: "Get incident summary counts for a recent time window in minutes.",
 			Strict:      true,
@@ -560,6 +577,26 @@ func (a Agent) executeToolCall(ctx context.Context, name string, args map[string
 		step := time.Duration(stepSeconds) * time.Second
 		data, err := a.OpsAPI.PrometheusQuery(ctx, env, stringFromAny(args["query"]), intFromAny(args["minutes"], 0), step)
 		return data, env, "", err
+	case "list_recent_changes":
+		env := stringFromAny(args["env"])
+		requestedProject := stringFromAny(args["project"])
+		if env != "" {
+			project, err := a.authorizeEnv(actor, env)
+			if err != nil {
+				return nil, env, "", err
+			}
+			if requestedProject == "" {
+				requestedProject = project
+			} else if normalizeProject(requestedProject) != normalizeProject(project) {
+				return nil, env, "", fmt.Errorf("env %q belongs to project %q, not %q", env, normalizeProject(project), normalizeProject(requestedProject))
+			}
+		}
+		projects, err := a.scopeProjects(actor, requestedProject)
+		if err != nil {
+			return nil, env, "", err
+		}
+		data, err := a.OpsAPI.RecentChanges(ctx, intFromAny(args["minutes"], 120), env, projects, intFromAny(args["limit"], 10))
+		return data, env, "", err
 	case "get_incident_summary":
 		projects, err := a.scopeProjects(actor, stringFromAny(args["project"]))
 		if err != nil {
@@ -715,7 +752,7 @@ func (a Agent) prompt() string {
 	var b strings.Builder
 	b.WriteString("You are the Telegram operations assistant for ops-agent.\n")
 	b.WriteString("Respond in the user's language, defaulting to Chinese.\n")
-	b.WriteString("Use tools whenever the user asks about health, Prometheus metrics, incidents, pending approvals, or actions.\n")
+	b.WriteString("Use tools whenever the user asks about health, Prometheus metrics, recent changes or deploys, incidents, pending approvals, or actions.\n")
 	b.WriteString("Never invent request IDs, environments, host names, or action names.\n")
 	b.WriteString("Respect project isolation. If a project is ambiguous, ask one short follow-up question instead of guessing.\n")
 	b.WriteString("Before approving or rejecting an ambiguous request, prefer listing or fetching request details first.\n")
@@ -1097,6 +1134,21 @@ func (a Agent) auditToolEvent(actor, toolName string, args map[string]any, statu
 
 func summarizeToolCall(toolName string, args map[string]any) string {
 	switch toolName {
+	case "list_recent_changes":
+		parts := []string{"list_recent_changes"}
+		if env := stringFromAny(args["env"]); env != "" {
+			parts = append(parts, "env="+env)
+		}
+		if project := stringFromAny(args["project"]); project != "" {
+			parts = append(parts, "project="+project)
+		}
+		if minutes := intFromAny(args["minutes"], 0); minutes > 0 {
+			parts = append(parts, fmt.Sprintf("minutes=%d", minutes))
+		}
+		if limit := intFromAny(args["limit"], 0); limit > 0 {
+			parts = append(parts, fmt.Sprintf("limit=%d", limit))
+		}
+		return strings.Join(parts, " ")
 	case "request_action":
 		parts := []string{"request_action"}
 		if env := stringFromAny(args["env"]); env != "" {

@@ -148,7 +148,7 @@ func (a Authorizer) AuthorizeInput(actor, input string) error {
 
 func (a Authorizer) AuthorizeCommand(actor string, cmd Command) error {
 	switch cmd.Name {
-	case "start", "help", "reset", "health", "promql", "stats", "incidents", "pending", "requests", "show", "active", "incident", "timeline":
+	case "start", "help", "reset", "health", "promql", "stats", "changes", "incidents", "pending", "requests", "show", "active", "incident", "timeline":
 		_, err := a.requireRole(actor, roleViewer)
 		return err
 	case "ack", "unsilence", "assign":
@@ -186,7 +186,7 @@ func (a Authorizer) AuthorizeCallback(actor, data string) error {
 
 func (a Authorizer) AuthorizeTool(actor, toolName string, args map[string]any) error {
 	switch toolName {
-	case "get_health", "query_prometheus", "get_incident_summary", "get_incident_stats", "list_pending", "list_actions", "get_action", "list_active_incidents", "get_incident", "get_incident_timeline":
+	case "get_health", "query_prometheus", "list_recent_changes", "get_incident_summary", "get_incident_stats", "list_pending", "list_actions", "get_action", "list_active_incidents", "get_incident", "get_incident_timeline":
 		_, err := a.requireRole(actor, roleViewer)
 		return err
 	case "acknowledge_incident", "unsilence_incident", "assign_incident":

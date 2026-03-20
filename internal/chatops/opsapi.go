@@ -63,6 +63,14 @@ type PrometheusQueryResponse struct {
 	Data    promapi.QueryResponse `json:"data"`
 }
 
+type RecentChangesResponse struct {
+	WindowMinutes int                      `json:"window_minutes"`
+	Projects      []string                 `json:"projects,omitempty"`
+	Env           string                   `json:"env,omitempty"`
+	Count         int                      `json:"count"`
+	Items         []incident.TimelineEntry `json:"items"`
+}
+
 type PendingResponse struct {
 	Count int                `json:"count"`
 	Items []approval.Request `json:"items"`
@@ -118,6 +126,29 @@ func (c OpsAPIClient) PrometheusQuery(ctx context.Context, env, query string, mi
 		q.Set("step", step.String())
 	}
 	if err := c.doJSON(ctx, http.MethodGet, "/prometheus/query?"+q.Encode(), nil, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (c OpsAPIClient) RecentChanges(ctx context.Context, minutes int, env string, projects []string, limit int) (RecentChangesResponse, error) {
+	var out RecentChangesResponse
+	q := url.Values{}
+	if minutes > 0 {
+		q.Set("minutes", fmt.Sprintf("%d", minutes))
+	}
+	if strings.TrimSpace(env) != "" {
+		q.Set("env", strings.TrimSpace(env))
+	}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	for _, project := range projects {
+		if strings.TrimSpace(project) != "" {
+			q.Add("project", strings.TrimSpace(project))
+		}
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/changes/recent?"+q.Encode(), nil, &out); err != nil {
 		return out, err
 	}
 	return out, nil

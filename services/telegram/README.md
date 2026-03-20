@@ -20,6 +20,7 @@ Current behavior:
 - Restricts interaction to a single `--chat-id`
 - Calls `ops-api` for health, incidents, pending approvals, approvals, rejections, and action requests
 - Calls `ops-api` for Prometheus queries tied to the selected environment
+- Calls `ops-api` for recent deploy/config/rollback markers through `/changes` and natural-language change queries
 - Calls `ops-api` for active incident lifecycle too, including acknowledge and owner assignment
 - Shows Alertmanager-ingested incidents in the same `/active`, `/incident`, `/timeline`, `/ack`, and `/assign` flows
 - Can trigger an upstream Alertmanager silence when `/ack` is used on an Alertmanager-backed incident and the API enables `--alertmanager-sync-ack`
@@ -39,6 +40,7 @@ Supported commands:
 - `/health <env>`
 - `/promql <env> [--minutes=30] [--step=60s] <query>`
 - `/stats [env]`
+- `/changes [env] [minutes]`
 - `/incidents [minutes]`
 - `/active [env]`
 - `/incident <incident_id>`
@@ -60,6 +62,7 @@ Natural-language examples:
 - `prod CPU 最近是不是升高了`
 - `prod 的 incident 平均多久 ack、多久恢复`
 - `最近 2 小时有什么异常`
+- `prod 最近 2 小时做了哪些变更`
 - `列出 prod 的活跃事故`
 - `先 ack 掉 prod 那个 incident`
 - `把 prod 那个 incident 的 silence 取消掉`
@@ -77,6 +80,8 @@ Interaction notes:
 - High-risk LLM-created operations render `Confirm / Cancel` buttons backed by the same pending confirmation store as the text replies
 - `/show <request_id>` returns one request's full detail and, if it is still pending, renders approve/reject buttons for that exact request
 - `/incident <incident_id>` returns one incident's detail and shows structured `external` / `silence` state; if the incident is still open or still silenced, it renders the relevant buttons for that exact incident
+- `/incident <incident_id>` also appends a short recent-change summary for the same project/environment when deploy or config markers exist nearby
 - `/timeline <incident_id> [minutes]` summarizes recent audit events and likely correlated changes around one incident
+- `/changes [env] [minutes]` lists recent deploy, rollback, maintenance, and config events in chat without requiring the full incident timeline
 - `/promql <env> ...` returns either an instant Prometheus value or a short range summary for the selected environment
 - `/stats [env]` returns lifecycle incident stats such as open count, reopen count, average MTTA, and average MTTR for the actor's allowed project scope

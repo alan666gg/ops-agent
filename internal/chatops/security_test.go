@@ -42,6 +42,9 @@ max_input_chars: 100
 	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "stats", Env: "prod"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "changes", Env: "prod", Minutes: 120}); err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.AuthorizeCommand("tg:@viewer", Command{Name: "timeline", IncidentID: "ops-scheduler|payments|prod"}); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +79,9 @@ max_input_chars: 100
 		t.Fatal(err)
 	}
 	if err := auth.AuthorizeTool("tg:@viewer", "query_prometheus", map[string]any{"env": "prod", "query": "up"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.AuthorizeTool("tg:@viewer", "list_recent_changes", map[string]any{"env": "prod", "minutes": 120, "limit": 5}); err != nil {
 		t.Fatal(err)
 	}
 	if err := auth.AuthorizeTool("tg:@operator", "unsilence_incident", map[string]any{"incident_id": "alertmanager|payments|prod|fp-1"}); err != nil {

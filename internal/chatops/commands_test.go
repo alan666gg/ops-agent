@@ -94,6 +94,22 @@ func TestParseCommandHealthAndRequest(t *testing.T) {
 	if cmd.Name != "stats" || cmd.Env != "prod" {
 		t.Fatalf("unexpected stats command: %+v", cmd)
 	}
+
+	cmd, err = ParseCommand("/changes prod 180")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "changes" || cmd.Env != "prod" || cmd.Minutes != 180 {
+		t.Fatalf("unexpected changes command: %+v", cmd)
+	}
+
+	cmd, err = ParseCommand("/changes 45")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name != "changes" || cmd.Env != "" || cmd.Minutes != 45 {
+		t.Fatalf("unexpected changes shortcut command: %+v", cmd)
+	}
 }
 
 func TestParseCommandRejectRequiresRequestID(t *testing.T) {
@@ -201,6 +217,23 @@ func TestFormatIncidentStats(t *testing.T) {
 	}
 }
 
+func TestFormatRecentChanges(t *testing.T) {
+	text := FormatRecentChanges(RecentChangesResponse{
+		WindowMinutes: 120,
+		Projects:      []string{"core"},
+		Env:           "prod",
+		Count:         1,
+		Items: []incident.TimelineEntry{
+			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "deploy_release", Status: "ok", Actor: "ci:github-actions", Target: "service/api"},
+		},
+	})
+	for _, want := range []string{"recent changes last 120 minutes", "env=prod", "projects=core", "deploy_release"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+}
+
 func TestFormatActiveIncidents(t *testing.T) {
 	text := FormatActiveIncidents(IncidentListResponse{
 		Count: 1,
@@ -240,6 +273,31 @@ func TestFormatIncidentDetail(t *testing.T) {
 		},
 	})
 	for _, want := range []string{"incident ops-scheduler|core|prod", "owner=alice", "acknowledged_by=tg:@ops", "external=alertmanager", "silence=active id=sil-123"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in %q", want, text)
+		}
+	}
+}
+
+func TestFormatIncidentDetailWithChanges(t *testing.T) {
+	text := FormatIncidentDetailWithChanges(
+		incident.Record{
+			ID:      "ops-scheduler|core|prod",
+			Project: "core",
+			Env:     "prod",
+			Source:  "ops-scheduler",
+			Status:  "fail",
+			Summary: "api unhealthy",
+		},
+		RecentChangesResponse{
+			WindowMinutes: 120,
+			Count:         1,
+			Items: []incident.TimelineEntry{
+				{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "deploy_release", Status: "ok", Actor: "ci:github-actions", Target: "service/api"},
+			},
+		},
+	)
+	for _, want := range []string{"recent changes last 120 minutes", "deploy_release", "service/api"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}

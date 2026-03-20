@@ -168,6 +168,7 @@ Telegram commands:
 /promql prod up
 /promql prod --minutes=30 --step=60s avg(rate(http_requests_total[5m]))
 /stats prod
+/changes prod 120
 /incidents 60
 /active prod
 /incident <incident_id>
@@ -191,6 +192,7 @@ prod 过去 30 分钟请求量怎么样
 prod CPU 最近是不是升高了
 prod 的 incident 平均多久 ack、多久恢复
 最近 2 小时有什么异常
+prod 最近 2 小时做了哪些变更
 列出 prod 的活跃事故
 把 prod 那个 incident 先 ack 掉
 把这个 incident 的 silence 取消掉
@@ -321,8 +323,11 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `/pending` now includes `View / Approve / Reject` inline buttons, and high-risk LLM actions expose `Confirm / Cancel` buttons as a safer alternative to free-text confirmation.
 - `/active`, `/incident`, `/ack`, and `/assign` turn Telegram into a real incident room: responders can see what is currently open, acknowledge it, and claim ownership without leaving chat.
 - `/stats [env]` and `GET /incidents/stats` expose lifecycle aggregates such as open count, reopen count, mean time to acknowledge, and mean time to resolve.
+- `/changes [env] [minutes]` and `GET /changes/recent` expose recent deploy, rollback, maintenance, and config markers inside the same Telegram workflow.
 - `/timeline <incident_id> [minutes]` and the inline `Timeline` button let responders inspect what changed shortly before an incident opened, including likely correlated deploy/runbook changes.
+- Telegram incident detail replies now append a short recent-change summary for the same `project + env`, so responders can see nearby deploy/config activity without opening the full timeline first.
 - `/promql <env> ...` and the `query_prometheus` LLM tool let responders pull Prometheus metrics and recent trends into the same Telegram workflow as incidents and approvals.
+- The LLM also gets a `list_recent_changes` tool, so natural-language questions about deploys or config changes stay inside the same audited tool-calling path.
 - If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.
 - The LLM is a planner only: it can read health/incidents/pending requests and submit approve/reject/request actions through `ops-api`, so policy, approval, audit, and execution still stay in `ops-api` + `ops-worker`.
 - `/requests [status]` and `/show <request_id>` make request detail lookup explicit, so operators and the LLM can inspect a concrete request before approving or rejecting it.

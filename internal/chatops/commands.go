@@ -48,6 +48,30 @@ func ParseCommand(text string) (Command, error) {
 			out.Env = fields[1]
 		}
 		return out, nil
+	case "changes":
+		out.Minutes = 120
+		switch len(fields) {
+		case 1:
+			return out, nil
+		case 2:
+			if v, err := strconv.Atoi(fields[1]); err == nil {
+				if v <= 0 {
+					return Command{}, fmt.Errorf("minutes must be a positive integer")
+				}
+				out.Minutes = v
+				return out, nil
+			}
+			out.Env = fields[1]
+			return out, nil
+		default:
+			out.Env = fields[1]
+			v, err := strconv.Atoi(fields[2])
+			if err != nil || v <= 0 {
+				return Command{}, fmt.Errorf("minutes must be a positive integer")
+			}
+			out.Minutes = v
+			return out, nil
+		}
 	case "active":
 		if len(fields) > 1 {
 			out.Env = fields[1]
@@ -204,6 +228,7 @@ func HelpText() string {
 		"/health <env>",
 		"/promql <env> [--minutes=30] [--step=60s] <query>",
 		"/stats [env]",
+		"/changes [env] [minutes]",
 		"/incidents [minutes]",
 		"/pending",
 		"/active [env]",
@@ -365,6 +390,31 @@ func FormatIncidentStats(resp IncidentStatsResponse) string {
 	return strings.Join(lines, "\n")
 }
 
+func FormatRecentChanges(resp RecentChangesResponse) string {
+	lines := []string{
+		fmt.Sprintf("recent changes last %d minutes", resp.WindowMinutes),
+		fmt.Sprintf("- count=%d", resp.Count),
+	}
+	if strings.TrimSpace(resp.Env) != "" {
+		lines = append(lines, "- env="+resp.Env)
+	}
+	if len(resp.Projects) > 0 {
+		lines = append(lines, "- projects="+strings.Join(resp.Projects, ","))
+	}
+	if len(resp.Items) == 0 {
+		lines = append(lines, "- no recent deploy or change events found")
+		return strings.Join(lines, "\n")
+	}
+	for i, item := range resp.Items {
+		if i >= 10 {
+			lines = append(lines, fmt.Sprintf("- changes ... and %d more", len(resp.Items)-i))
+			break
+		}
+		lines = append(lines, "- "+formatTimelineEntry(item))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func FormatPending(resp PendingResponse) string {
 	if len(resp.Items) == 0 {
 		return "no pending approvals"
@@ -453,6 +503,22 @@ func FormatIncidentDetail(item incident.Record) string {
 	}
 	if strings.TrimSpace(item.Note) != "" {
 		lines = append(lines, "- note="+trimForChat(item.Note, 160))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func FormatIncidentDetailWithChanges(item incident.Record, changes RecentChangesResponse) string {
+	lines := strings.Split(FormatIncidentDetail(item), "\n")
+	if len(changes.Items) == 0 {
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, fmt.Sprintf("- recent changes last %d minutes:", changes.WindowMinutes))
+	for i, change := range changes.Items {
+		if i >= 3 {
+			lines = append(lines, fmt.Sprintf("  ... and %d more", len(changes.Items)-i))
+			break
+		}
+		lines = append(lines, "  "+formatTimelineEntry(change))
 	}
 	return strings.Join(lines, "\n")
 }
