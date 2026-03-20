@@ -40,9 +40,13 @@ func main() {
 	notifyRecoveryAfter := flag.Int("notify-recovery-after", 1, "close an incident only after this many consecutive healthy cycles")
 	notifyConfigFile := flag.String("notify-config", "", "notification routing config file (replaces direct notifier flags)")
 	discoverInterval := flag.Duration("discover-interval", 0, "low-frequency auto-discovery interval; 0 disables periodic discovery")
+	discoverApply := flag.Bool("discover-apply", false, "persist discovery suggestions back to env-file; default false keeps discovery report-only")
 	discoverTimeout := flag.Duration("discover-timeout", 30*time.Second, "ssh discovery timeout per host")
 	discoverHealthPaths := flag.String("discover-health-paths", "/healthz,/health,/", "candidate HTTP paths used when auto-probing discovered services")
 	discoverProbeTimeout := flag.Duration("discover-probe-timeout", 1500*time.Millisecond, "timeout for probing candidate healthcheck URLs during discovery apply")
+	discoverAllowPorts := flag.String("discover-allow-ports", "", "comma-separated listener ports allowed for auto-enrollment")
+	discoverAllowNames := flag.String("discover-allow-names", "", "comma-separated service/container/process patterns allowed for auto-enrollment")
+	discoverMaxAdditions := flag.Int("discover-max-additions", 5, "maximum number of new services one discovery cycle may add before it is blocked")
 	once := flag.Bool("once", false, "run one cycle and exit")
 	flag.Parse()
 	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
@@ -144,7 +148,11 @@ func main() {
 			discoveredEnv, summary := runDiscoveryCycle(ctx, auditStore, *envName, env, discovery.ApplyOptions{
 				HealthPaths:  splitCSV(*discoverHealthPaths),
 				ProbeTimeout: *discoverProbeTimeout,
-			}, *discoverTimeout)
+				DryRun:       !*discoverApply,
+				AllowedPorts: splitPortsCSV(*discoverAllowPorts),
+				AllowedNames: splitCSV(*discoverAllowNames),
+				MaxAdditions: *discoverMaxAdditions,
+			}, *discoverTimeout, *discoverApply)
 			lastDiscovery = time.Now().UTC()
 			if summary.Attempted > 0 {
 				evt := audit.Event{
@@ -154,14 +162,14 @@ func main() {
 					Project: project,
 					Env:     *envName,
 					Status:  "ok",
-					Message: fmt.Sprintf("attempted=%d failed=%d added=%d updated=%d skipped=%d", summary.Attempted, summary.Failed, summary.Added, summary.Updated, summary.Skipped),
+					Message: fmt.Sprintf("attempted=%d failed=%d added=%d updated=%d filtered=%d skipped=%d blocked=%d apply=%t", summary.Attempted, summary.Failed, summary.Added, summary.Updated, summary.Filtered, summary.Skipped, summary.Blocked, *discoverApply),
 				}
-				if summary.Failed > 0 {
+				if summary.Failed > 0 || summary.Blocked > 0 {
 					evt.Status = "warn"
 				}
 				_ = auditStore.Append(evt)
 			}
-			if summary.Changed {
+			if *discoverApply && summary.Changed {
 				cfg.Environments[*envName] = discoveredEnv
 				if err := config.SaveEnvironments(*envFile, cfg); err != nil {
 					fmt.Printf("save env config error: %v\n", err)
@@ -184,7 +192,7 @@ func main() {
 						Project: project,
 						Env:     *envName,
 						Status:  "ok",
-						Message: fmt.Sprintf("applied added=%d updated=%d skipped=%d", summary.Added, summary.Updated, summary.Skipped),
+						Message: fmt.Sprintf("applied added=%d updated=%d filtered=%d skipped=%d", summary.Added, summary.Updated, summary.Filtered, summary.Skipped),
 					})
 				}
 			}
@@ -326,11 +334,13 @@ type discoverySummary struct {
 	Failed    int
 	Added     int
 	Updated   int
+	Filtered  int
 	Skipped   int
+	Blocked   int
 	Changed   bool
 }
 
-func runDiscoveryCycle(ctx context.Context, auditStore audit.Store, envName string, env config.Environment, opts discovery.ApplyOptions, timeout time.Duration) (config.Environment, discoverySummary) {
+func runDiscoveryCycle(ctx context.Context, auditStore audit.Store, envName string, env config.Environment, opts discovery.ApplyOptions, timeout time.Duration, apply bool) (config.Environment, discoverySummary) {
 	updatedEnv := env
 	var summary discoverySummary
 	project := env.ProjectName()
@@ -352,10 +362,24 @@ func runDiscoveryCycle(ctx context.Context, auditStore audit.Store, envName stri
 			continue
 		}
 		result := discovery.ApplyReport(ctx, &updatedEnv, report, opts)
+		if result.Blocked {
+			summary.Blocked++
+			_ = auditStore.Append(audit.Event{
+				Time:       time.Now().UTC(),
+				Actor:      "ops-scheduler",
+				Action:     "discovery_guardrail",
+				Project:    project,
+				Env:        envName,
+				TargetHost: host.Name,
+				Status:     "warn",
+				Message:    result.BlockReason,
+			})
+		}
 		summary.Added += len(result.Added)
 		summary.Updated += len(result.Updated)
+		summary.Filtered += len(result.Filtered)
 		summary.Skipped += len(result.Skipped)
-		if len(result.Added) > 0 || len(result.Updated) > 0 {
+		if apply && !result.Blocked && (len(result.Added) > 0 || len(result.Updated) > 0) {
 			summary.Changed = true
 		}
 		_ = auditStore.Append(audit.Event{
@@ -366,7 +390,7 @@ func runDiscoveryCycle(ctx context.Context, auditStore audit.Store, envName stri
 			Env:        envName,
 			TargetHost: host.Name,
 			Status:     "ok",
-			Message:    fmt.Sprintf("suggested=%d added=%d updated=%d skipped=%d", len(report.SuggestedService), len(result.Added), len(result.Updated), len(result.Skipped)),
+			Message:    fmt.Sprintf("suggested=%d added=%d updated=%d filtered=%d skipped=%d blocked=%t apply=%t", len(report.SuggestedService), len(result.Added), len(result.Updated), len(result.Filtered), len(result.Skipped), result.Blocked, apply),
 		})
 	}
 	return updatedEnv, summary
@@ -392,6 +416,18 @@ func splitCSV(s string) []string {
 		v = strings.TrimSpace(v)
 		if v != "" {
 			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func splitPortsCSV(s string) []int {
+	var out []int
+	for _, item := range splitCSV(s) {
+		port := 0
+		fmt.Sscanf(item, "%d", &port)
+		if port > 0 {
+			out = append(out, port)
 		}
 	}
 	return out

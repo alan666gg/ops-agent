@@ -219,6 +219,9 @@ func runDiscover(args []string) {
 	apply := fs.Bool("apply", false, "merge discovered services into the selected environment config")
 	healthPaths := fs.String("health-paths", "/healthz,/health,/", "candidate HTTP paths used when auto-probing discovered services")
 	probeTimeout := fs.Duration("probe-timeout", 1500*time.Millisecond, "timeout for probing candidate healthcheck URLs during --apply")
+	allowPorts := fs.String("allow-ports", "", "comma-separated listener ports allowed during --apply")
+	allowNames := fs.String("allow-names", "", "comma-separated service/container/process patterns allowed during --apply")
+	maxAdditions := fs.Int("max-additions", 0, "maximum number of new services allowed during --apply; 0 disables the cap")
 	_ = fs.Parse(args)
 
 	if strings.TrimSpace(*hostName) == "" {
@@ -251,13 +254,20 @@ func runDiscover(args []string) {
 		result := discovery.ApplyReport(context.Background(), &envCopy, report, discovery.ApplyOptions{
 			HealthPaths:  splitCSV(*healthPaths),
 			ProbeTimeout: *probeTimeout,
+			AllowedPorts: splitPortsCSV(*allowPorts),
+			AllowedNames: splitCSV(*allowNames),
+			MaxAdditions: *maxAdditions,
 		})
+		if result.Blocked {
+			fmt.Printf("discovery apply blocked for env=%s host=%s: %s\n", *envName, host.Name, result.BlockReason)
+			os.Exit(2)
+		}
 		cfg.Environments[*envName] = envCopy
 		if err := config.SaveEnvironments(*envFile, cfg); err != nil {
 			fmt.Println("save environment config error:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("applied discovery to %s env=%s host=%s: added=%d updated=%d skipped=%d\n", *envFile, *envName, host.Name, len(result.Added), len(result.Updated), len(result.Skipped))
+		fmt.Printf("applied discovery to %s env=%s host=%s: added=%d updated=%d filtered=%d skipped=%d\n", *envFile, *envName, host.Name, len(result.Added), len(result.Updated), len(result.Filtered), len(result.Skipped))
 		for _, svc := range result.Added {
 			fmt.Printf("  added service %s type=%s container=%s systemd=%s port=%d health=%s\n", svc.Name, defaultString(svc.Type, "(unknown)"), defaultString(svc.ContainerName, "-"), defaultString(svc.SystemdUnit, "-"), svc.ListenerPort, defaultString(svc.HealthcheckURL, "(none)"))
 		}
@@ -265,7 +275,10 @@ func runDiscover(args []string) {
 			fmt.Printf("  updated service %s type=%s systemd=%s port=%d health=%s\n", svc.Name, defaultString(svc.Type, "(unknown)"), defaultString(svc.SystemdUnit, "-"), svc.ListenerPort, defaultString(svc.HealthcheckURL, "(none)"))
 		}
 		if len(result.Skipped) > 0 {
-			fmt.Printf("  skipped existing candidates: %s\n", strings.Join(result.Skipped, ", "))
+			fmt.Printf("  skipped candidates: %s\n", strings.Join(result.Skipped, ", "))
+		}
+		if len(result.Filtered) > 0 {
+			fmt.Printf("  filtered candidates: %s\n", strings.Join(result.Filtered, ", "))
 		}
 	}
 	var payload []byte
@@ -491,6 +504,18 @@ func splitCSV(s string) []string {
 		v = strings.TrimSpace(v)
 		if v != "" {
 			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func splitPortsCSV(s string) []int {
+	var out []int
+	for _, item := range splitCSV(s) {
+		port := 0
+		fmt.Sscanf(item, "%d", &port)
+		if port > 0 {
+			out = append(out, port)
 		}
 	}
 	return out

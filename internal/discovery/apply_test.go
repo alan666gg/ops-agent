@@ -124,3 +124,82 @@ func TestApplyReportAddsSystemdAndListenerCandidatesAndSkipsOpaqueOnes(t *testin
 		t.Fatalf("unexpected services after apply: %+v", env.Services)
 	}
 }
+
+func TestApplyReportDryRunDoesNotMutateEnvironment(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{{Name: "app-1", Host: "10.0.0.5"}},
+	}
+	report := Report{
+		HostName:    "app-1",
+		HostAddress: "10.0.0.5",
+		SuggestedService: []ServiceCandidate{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api", ListenerPort: 8080, CandidateHealthURLs: []string{"http://10.0.0.5:8080/"}},
+		},
+	}
+	result := ApplyReport(context.Background(), &env, report, ApplyOptions{
+		DryRun:       true,
+		ProbeTimeout: time.Second,
+		Prober: fakeProber{reachable: map[string]bool{
+			"http://10.0.0.5:8080/healthz": true,
+			"http://10.0.0.5:8080/":        true,
+		}},
+	})
+	if len(result.Added) != 1 {
+		t.Fatalf("expected one proposed addition, got %+v", result)
+	}
+	if len(env.Services) != 0 {
+		t.Fatalf("expected dry-run to leave env untouched, got %+v", env.Services)
+	}
+}
+
+func TestApplyReportFiltersByAllowlist(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{{Name: "app-1", Host: "10.0.0.5"}},
+	}
+	report := Report{
+		HostName:    "app-1",
+		HostAddress: "10.0.0.5",
+		SuggestedService: []ServiceCandidate{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api", ListenerPort: 8080},
+			{Name: "grafana", Host: "app-1", Type: "listener", ProcessName: "grafana", ListenerPort: 3000},
+			{Name: "nginx", Host: "app-1", Type: "systemd", SystemdUnit: "nginx.service", ProcessName: "nginx", ListenerPort: 80},
+		},
+	}
+	result := ApplyReport(context.Background(), &env, report, ApplyOptions{
+		AllowedPorts: []int{80},
+		AllowedNames: []string{"nginx*", "api"},
+		ProbeTimeout: time.Second,
+		Prober:       fakeProber{},
+	})
+	if len(result.Added) != 1 || result.Added[0].SystemdUnit != "nginx.service" {
+		t.Fatalf("expected only nginx to be added, got %+v", result.Added)
+	}
+	if len(result.Filtered) != 2 {
+		t.Fatalf("expected two filtered candidates, got %+v", result.Filtered)
+	}
+}
+
+func TestApplyReportBlocksWhenMaxAdditionsExceeded(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{{Name: "app-1", Host: "10.0.0.5"}},
+	}
+	report := Report{
+		HostName:    "app-1",
+		HostAddress: "10.0.0.5",
+		SuggestedService: []ServiceCandidate{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api", ListenerPort: 8080},
+			{Name: "worker", Host: "app-1", Type: "container", ContainerName: "worker", ListenerPort: 9090},
+		},
+	}
+	result := ApplyReport(context.Background(), &env, report, ApplyOptions{
+		MaxAdditions: 1,
+		ProbeTimeout: time.Second,
+		Prober:       fakeProber{},
+	})
+	if !result.Blocked {
+		t.Fatalf("expected blocked apply result, got %+v", result)
+	}
+	if len(env.Services) != 0 {
+		t.Fatalf("expected blocked apply to leave env untouched, got %+v", env.Services)
+	}
+}

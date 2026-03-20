@@ -2,7 +2,9 @@ package discovery
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,12 +25,19 @@ type ApplyOptions struct {
 	HealthPaths  []string
 	ProbeTimeout time.Duration
 	Prober       URLProber
+	DryRun       bool
+	AllowedPorts []int
+	AllowedNames []string
+	MaxAdditions int
 }
 
 type ApplyResult struct {
-	Added   []config.Service `json:"added" yaml:"added"`
-	Updated []config.Service `json:"updated" yaml:"updated"`
-	Skipped []string         `json:"skipped,omitempty" yaml:"skipped,omitempty"`
+	Added       []config.Service `json:"added" yaml:"added"`
+	Updated     []config.Service `json:"updated" yaml:"updated"`
+	Skipped     []string         `json:"skipped,omitempty" yaml:"skipped,omitempty"`
+	Filtered    []string         `json:"filtered,omitempty" yaml:"filtered,omitempty"`
+	Blocked     bool             `json:"blocked,omitempty" yaml:"blocked,omitempty"`
+	BlockReason string           `json:"block_reason,omitempty" yaml:"block_reason,omitempty"`
 }
 
 func DefaultHealthPaths() []string {
@@ -67,6 +76,15 @@ func ApplyReport(ctx context.Context, env *config.Environment, report Report, op
 	if env == nil {
 		return ApplyResult{Skipped: []string{"environment is nil"}}
 	}
+	working := cloneEnvironment(*env)
+	result := applyReport(ctx, &working, report, opts)
+	if !opts.DryRun && !result.Blocked {
+		*env = working
+	}
+	return result
+}
+
+func applyReport(ctx context.Context, env *config.Environment, report Report, opts ApplyOptions) ApplyResult {
 	healthPaths := normalizeHealthPaths(opts.HealthPaths)
 	prober := opts.Prober
 	if prober == nil {
@@ -80,16 +98,49 @@ func ApplyReport(ctx context.Context, env *config.Environment, report Report, op
 	for _, svc := range env.Services {
 		serviceNames[svc.Name] = true
 	}
+	allowedNames := normalizeAllowlist(opts.AllowedNames)
+	allowedPorts := allowPortSet(opts.AllowedPorts)
 	var result ApplyResult
+	type candidateEval struct {
+		candidate ServiceCandidate
+		index     int
+		reachable string
+		serviceID string
+	}
+	var evals []candidateEval
+	plannedAdditions := 0
 	for _, candidate := range report.SuggestedService {
+		if ok, reason := candidateAllowed(candidate, allowedNames, allowedPorts); !ok {
+			result.Filtered = append(result.Filtered, candidateID(candidate)+" ("+reason+")")
+			continue
+		}
 		idx := findService(env.Services, candidate)
 		urls := candidateURLsForApply(report.HostAddress, candidate, healthPaths)
 		reachable := prober.FirstReachable(ctx, urls, opts.ProbeTimeout)
+		itemID := candidateID(candidate)
 		if idx >= 0 {
-			current := env.Services[idx]
+			evals = append(evals, candidateEval{candidate: candidate, index: idx, reachable: reachable, serviceID: itemID})
+			continue
+		}
+		if reachable == "" && candidate.ListenerPort <= 0 && strings.TrimSpace(candidate.SystemdUnit) == "" {
+			result.Skipped = append(result.Skipped, itemID)
+			continue
+		}
+		plannedAdditions++
+		evals = append(evals, candidateEval{candidate: candidate, index: -1, reachable: reachable, serviceID: itemID})
+	}
+	if opts.MaxAdditions > 0 && plannedAdditions > opts.MaxAdditions {
+		result.Blocked = true
+		result.BlockReason = fmt.Sprintf("proposed additions %d exceed max_additions=%d", plannedAdditions, opts.MaxAdditions)
+		return result
+	}
+	for _, eval := range evals {
+		candidate := eval.candidate
+		if eval.index >= 0 {
+			current := env.Services[eval.index]
 			updated := false
-			if strings.TrimSpace(current.HealthcheckURL) == "" && reachable != "" {
-				current.HealthcheckURL = reachable
+			if strings.TrimSpace(current.HealthcheckURL) == "" && eval.reachable != "" {
+				current.HealthcheckURL = eval.reachable
 				updated = true
 			}
 			if strings.TrimSpace(current.Host) == "" && candidate.Host != "" {
@@ -117,18 +168,13 @@ func ApplyReport(ctx context.Context, env *config.Environment, report Report, op
 				updated = true
 			}
 			if updated {
-				env.Services[idx] = current
+				env.Services[eval.index] = current
 				result.Updated = append(result.Updated, current)
 			} else {
-				result.Skipped = append(result.Skipped, candidateID(candidate))
+				result.Skipped = append(result.Skipped, eval.serviceID)
 			}
 			continue
 		}
-		if reachable == "" && candidate.ListenerPort <= 0 && strings.TrimSpace(candidate.SystemdUnit) == "" {
-			result.Skipped = append(result.Skipped, candidateID(candidate))
-			continue
-		}
-
 		name := uniqueServiceName(serviceNames, candidate.Name)
 		serviceNames[name] = true
 		item := config.Service{
@@ -139,13 +185,82 @@ func ApplyReport(ctx context.Context, env *config.Environment, report Report, op
 			SystemdUnit:    candidate.SystemdUnit,
 			ProcessName:    candidate.ProcessName,
 			ListenerPort:   candidate.ListenerPort,
-			HealthcheckURL: reachable,
+			HealthcheckURL: eval.reachable,
 		}
 		env.Services = append(env.Services, item)
 		result.Added = append(result.Added, item)
 	}
 	sort.Slice(env.Services, func(i, j int) bool { return env.Services[i].Name < env.Services[j].Name })
 	return result
+}
+
+func cloneEnvironment(env config.Environment) config.Environment {
+	env.Hosts = append([]config.Host(nil), env.Hosts...)
+	env.Dependencies = append([]string(nil), env.Dependencies...)
+	env.Services = append([]config.Service(nil), env.Services...)
+	return env
+}
+
+func candidateAllowed(candidate ServiceCandidate, allowedNames []string, allowedPorts map[int]struct{}) (bool, string) {
+	if len(allowedPorts) > 0 {
+		if candidate.ListenerPort > 0 {
+			if _, ok := allowedPorts[candidate.ListenerPort]; !ok {
+				return false, "port not allowlisted"
+			}
+		} else if len(allowedNames) == 0 {
+			return false, "no port and no name allowlist match path"
+		}
+	}
+	if len(allowedNames) > 0 && !candidateNameAllowed(candidate, allowedNames) {
+		return false, "name not allowlisted"
+	}
+	return true, ""
+}
+
+func candidateNameAllowed(candidate ServiceCandidate, patterns []string) bool {
+	values := []string{
+		strings.ToLower(strings.TrimSpace(candidate.Name)),
+		strings.ToLower(strings.TrimSpace(candidate.ContainerName)),
+		strings.ToLower(strings.TrimSpace(candidate.SystemdUnit)),
+		strings.ToLower(strings.TrimSpace(systemdBaseName(candidate.SystemdUnit))),
+		strings.ToLower(strings.TrimSpace(candidate.ProcessName)),
+	}
+	for _, pattern := range patterns {
+		for _, value := range values {
+			if value == "" {
+				continue
+			}
+			matched, err := path.Match(pattern, value)
+			if err == nil && matched {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeAllowlist(items []string) []string {
+	var out []string
+	for _, item := range items {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func allowPortSet(items []int) map[int]struct{} {
+	if len(items) == 0 {
+		return nil
+	}
+	out := map[int]struct{}{}
+	for _, item := range items {
+		if item > 0 {
+			out[item] = struct{}{}
+		}
+	}
+	return out
 }
 
 func candidateURLsForApply(hostAddress string, candidate ServiceCandidate, healthPaths []string) []string {

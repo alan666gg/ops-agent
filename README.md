@@ -62,16 +62,18 @@ Host discovery (Docker + systemd + listening ports over SSH):
 go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --format yaml
 # optional file output
 go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --format json --out audit/discovery-app-1.json
-# one-step onboarding: discover container/systemd/listener services, probe health URLs, and write back into environments.yaml
-go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --apply
+# guarded onboarding: discover container/systemd/listener services, probe health URLs, and write back into environments.yaml
+go run ./cmd/ops-agent discover --env-file configs/environments.yaml --env prod --host app-1 --apply --allow-ports 80,443,8080 --allow-names 'api*,nginx*' --max-additions 5
 ```
 
 Scheduler (periodic health checks):
 
 ```bash
 go run ./cmd/ops-scheduler --env test --env-file configs/environments.yaml --audit audit/scheduler.jsonl --once
-# optional low-frequency inventory refresh alongside high-frequency health checks
+# optional low-frequency inventory refresh alongside high-frequency health checks; default is report-only
 go run ./cmd/ops-scheduler --env prod --env-file configs/environments.yaml --audit audit/scheduler.jsonl --discover-interval 6h --discover-timeout 20s
+# guarded auto-enrollment, only when you explicitly enable persistence
+go run ./cmd/ops-scheduler --env prod --env-file configs/environments.yaml --audit audit/scheduler.jsonl --discover-interval 6h --discover-apply --discover-allow-ports 80,443,8080 --discover-allow-names 'api*,nginx*' --discover-max-additions 5
 # recommended for larger installs: move audit history to sqlite
 go run ./cmd/ops-scheduler --env prod --env-file configs/environments.yaml --audit audit/scheduler.db --audit-driver sqlite --discover-interval 6h
 ```
@@ -107,6 +109,13 @@ Container runtime checks now surface richer failure context such as `oom_killed=
 Systemd log checks now de-duplicate repeated journal lines into compact summaries so notifications and chat replies stay readable.
 
 Service discovery is now a low-frequency companion step to the scheduler. `ops-agent discover` can SSH into a declared host, list Docker containers, running systemd services, and TCP listeners, then either output a candidate inventory or, with `--apply`, merge newly found services into `configs/environments.yaml` and auto-probe common health paths such as `/healthz`, `/health`, and `/`.
+Scheduler auto-discovery is now report-only by default. You must opt in with `--discover-apply` before it will persist discovered services.
+Both manual apply and scheduler auto-enrollment now support allowlists and caps:
+
+- `--allow-ports` / `--discover-allow-ports` to constrain exposed ports
+- `--allow-names` / `--discover-allow-names` to constrain service/container/process patterns
+- `--max-additions` / `--discover-max-additions` to block oversized discovery bursts instead of writing them
+
 When a discovered service has no confirmed HTTP health endpoint, the control plane now falls back to the best available check primitive:
 
 - container/listener services with a discovered port become TCP-backed service checks
@@ -305,7 +314,8 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `GET /audit/tail` only reads files inside the configured audit directory; `jsonl` stores return tail lines and `sqlite` stores return recent structured events.
 - `target_host` lets `ops-worker` and `ops-api` run a runbook over SSH on a host declared under the chosen environment.
 - `ops-agent discover --apply` only appends or enriches discovered services; it does not delete existing services or rewrite unrelated hosts.
-- `ops-scheduler --discover-interval` runs the same discovery/apply flow on a lower cadence than health checks, so new host services can join the next health cycle without a restart.
+- `ops-scheduler --discover-interval` runs the same discovery flow on a lower cadence than health checks, but it is report-only unless `--discover-apply` is explicitly enabled.
+- Discovery guardrails now support `discover-allow-ports`, `discover-allow-names`, and `discover-max-additions`, so one noisy host can no longer explode `environments.yaml` in a single cycle.
 - `host_ssh_*` remains the root-cause gate for host reachability; if SSH is already down, the incident layer suppresses dependent host resource/process checks to avoid duplicate noise.
 - `service_runtime_*` and `service_logs_*` are treated as service-scoped signals, so container flapping and recent systemd error logs show up in the same incident context as the parent service.
 - `/health` and `/health/run` responses now include `highlights`, `metric_signals`, recent change context, and strategy-tagged suggestions so callers can distinguish restart candidates from likely release regressions or capacity issues.
