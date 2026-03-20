@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/incident"
 	"github.com/alan666gg/ops-agent/internal/notify"
 	"github.com/alan666gg/ops-agent/internal/policy"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 	"github.com/alan666gg/ops-agent/internal/slo"
 )
 
@@ -231,8 +233,21 @@ func main() {
 		policyCfg, _ := policy.Load(*policyFile)
 		recentAutoActions, _ := auditStore.CountRecentAutoActions(project, *envName, time.Now().UTC().Add(-time.Hour))
 		recentChanges, _ := incident.RecentChanges(auditStore, project, *envName, 2*time.Hour, 5)
+		metricSignals, err := evaluatePrometheusSignals(ctx, *envName, env)
+		if err != nil {
+			_ = auditStore.Append(audit.Event{
+				Time:    time.Now().UTC(),
+				Actor:   "ops-scheduler",
+				Action:  "prometheus_signal_eval",
+				Project: project,
+				Env:     *envName,
+				Status:  "failed",
+				Message: err.Error(),
+			})
+		}
 		report := incident.BuildReportWithContext("ops-scheduler", *envName, env, results, policyCfg, recentAutoActions, incident.ReportContext{
 			RecentChanges: recentChanges,
+			MetricSignals: metricSignals,
 		})
 		record, err := syncIncident(incidentStore, report)
 		if err != nil {
@@ -416,6 +431,20 @@ func defaultStatus(v string) string {
 		return "ok"
 	}
 	return v
+}
+
+func evaluatePrometheusSignals(ctx context.Context, envName string, env config.Environment) ([]promapi.SignalObservation, error) {
+	cfg := env.Prometheus.WithDefaults()
+	if len(cfg.Signals) == 0 {
+		return nil, nil
+	}
+	client, timeout, err := promapi.ClientForConfig(cfg, &http.Client{Timeout: cfg.Timeout})
+	if err != nil {
+		return nil, err
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return promapi.EvaluateSignals(queryCtx, client, envName, env, time.Now().UTC())
 }
 
 func trimAuditSummary(v string) string {

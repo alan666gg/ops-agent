@@ -54,6 +54,13 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
       base_url: http://127.0.0.1:9090
       bearer_token_env: PROM_TEST_TOKEN
       timeout: 10s
+      signals:
+        - name: host_cpu_hot
+          scope: host
+          strategy: capacity
+          query: avg(rate(node_cpu_seconds_total{instance="${host_addr}:9100",mode!="idle"}[5m]))
+          comparator: above
+          threshold: 0.85
     hosts:
       - name: app-1
         host: 127.0.0.1
@@ -98,6 +105,9 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	if prom.BaseURL != "http://127.0.0.1:9090" || prom.BearerTokenEnv != "PROM_TEST_TOKEN" || prom.Timeout != 10*time.Second {
 		t.Fatalf("unexpected prometheus config: %+v", prom)
 	}
+	if len(prom.Signals) != 1 || prom.Signals[0].Name != "host_cpu_hot" || prom.Signals[0].Scope != "host" || prom.Signals[0].Strategy != "capacity" {
+		t.Fatalf("unexpected prometheus signals: %+v", prom.Signals)
+	}
 	slo := cfg.Environments["test"].Services[0].SLO.WithDefaults()
 	if slo.PageBurnRate != 10 || slo.TicketBurnRate != 2 || slo.MinSamples != 4 {
 		t.Fatalf("unexpected slo defaults: %+v", slo)
@@ -109,6 +119,33 @@ func TestLoadEnvironmentsAcceptsValidConfig(t *testing.T) {
 	serviceChecks := cfg.Environments["test"].Services[0].Checks.WithDefaults(cfg.Environments["test"].Services[0])
 	if serviceChecks.RestartWarnCount != 2 || serviceChecks.RestartFailCount != 5 || serviceChecks.RestartFlapWindow != 15*time.Minute {
 		t.Fatalf("unexpected service check config: %+v", serviceChecks)
+	}
+}
+
+func TestLoadEnvironmentsRejectsInvalidPrometheusSignalConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environments.yaml")
+	content := `environments:
+  prod:
+    prometheus:
+      base_url: http://127.0.0.1:9090
+      signals:
+        - name: bad signal
+          scope: host
+          query: up{instance="${host_addr}:9100"}
+          comparator: sideways
+          threshold: 1
+    hosts:
+      - name: app-1
+        host: 10.0.0.5
+    services: []
+    dependencies: []
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadEnvironments(path); err == nil {
+		t.Fatal("expected invalid prometheus signal validation error")
 	}
 }
 

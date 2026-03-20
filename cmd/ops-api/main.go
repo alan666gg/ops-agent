@@ -655,8 +655,21 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 	policyCfg, _ := policy.Load(s.policyFile)
 	recentAutoActions, _ := s.auditStore.CountRecentAutoActions(project, envName, time.Now().UTC().Add(-time.Hour))
 	recentChanges, _ := incident.RecentChanges(s.auditStore, project, envName, 2*time.Hour, 5)
+	metricSignals, err := evaluatePrometheusSignals(r.Context(), envName, env)
+	if err != nil {
+		_ = s.auditStore.Append(audit.Event{
+			Time:    time.Now().UTC(),
+			Actor:   "ops-api",
+			Action:  "prometheus_signal_eval",
+			Project: project,
+			Env:     envName,
+			Status:  "failed",
+			Message: err.Error(),
+		})
+	}
 	report := incident.BuildReportWithContext("ops-api", envName, env, results, policyCfg, recentAutoActions, incident.ReportContext{
 		RecentChanges: recentChanges,
+		MetricSignals: metricSignals,
 	})
 	record, err := s.syncIncident(report)
 	if err != nil {
@@ -692,6 +705,7 @@ func (s *server) handleRunHealth(w http.ResponseWriter, r *http.Request) {
 		"status":            report.Status,
 		"results":           results,
 		"recent_changes":    report.RecentChanges,
+		"metric_signals":    report.MetricSignals,
 		"suppressed_checks": report.SuppressedChecks,
 		"suggestions":       report.Suggestions,
 		"summary":           report.Summary,
@@ -2680,22 +2694,21 @@ func timesEqual(a, b time.Time) bool {
 }
 
 func prometheusClientForEnv(env config.Environment) (promapi.Client, time.Duration, error) {
+	return promapi.ClientForConfig(env.Prometheus, newPrometheusHTTPClient(env.Prometheus.WithDefaults().Timeout))
+}
+
+func evaluatePrometheusSignals(ctx context.Context, envName string, env config.Environment) ([]promapi.SignalObservation, error) {
 	cfg := env.Prometheus.WithDefaults()
-	if !cfg.Enabled() {
-		return promapi.Client{}, 0, fmt.Errorf("prometheus not configured for env")
+	if len(cfg.Signals) == 0 {
+		return nil, nil
 	}
-	token := ""
-	if name := strings.TrimSpace(cfg.BearerTokenEnv); name != "" {
-		token = strings.TrimSpace(os.Getenv(name))
-		if token == "" {
-			return promapi.Client{}, 0, fmt.Errorf("prometheus bearer token env %q is empty", name)
-		}
+	client, timeout, err := prometheusClientForEnv(env)
+	if err != nil {
+		return nil, err
 	}
-	return promapi.Client{
-		BaseURL:     cfg.BaseURL,
-		BearerToken: token,
-		HTTPClient:  newPrometheusHTTPClient(cfg.Timeout),
-	}, cfg.Timeout, nil
+	queryCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return promapi.EvaluateSignals(queryCtx, client, envName, env, time.Now().UTC())
 }
 
 func (s *server) resolveAuditFile(name string) (string, error) {

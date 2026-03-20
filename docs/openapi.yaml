@@ -29,7 +29,7 @@ paths:
           description: Metrics text
   /health/run:
     get:
-      summary: Run health checks for an environment, including highlights, recent changes, and strategy-tagged suggestions
+      summary: Run health checks for an environment, including highlights, Prometheus metric signals, recent changes, and strategy-tagged suggestions
       parameters:
         - in: query
           name: env

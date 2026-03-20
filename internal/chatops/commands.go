@@ -258,6 +258,13 @@ func FormatHealth(resp HealthResponse) string {
 		}
 		lines = append(lines, "- highlight "+trimForChat(item, 140))
 	}
+	for i, item := range resp.MetricSignals {
+		if i >= 2 {
+			lines = append(lines, fmt.Sprintf("- metric_signals ... and %d more", len(resp.MetricSignals)-i))
+			break
+		}
+		lines = append(lines, "- metric "+trimForChat(promapi.FormatSignalObservation(item), 160))
+	}
 	for i, item := range resp.RecentChanges {
 		if i >= 2 {
 			break

@@ -128,6 +128,9 @@ func TestFormatHealthIncludesSuppressedAndSuggestions(t *testing.T) {
 		RecentChanges: []incident.TimelineEntry{
 			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "deploy_event", Reference: "v2026.03.20", Revision: "abcdef123456", Target: "service/api"},
 		},
+		MetricSignals: []promapi.SignalObservation{
+			{Name: "host_cpu_hot", Scope: "host", Subject: "app-1", Strategy: "capacity", Comparator: "above", Threshold: 2, Value: 2.7},
+		},
 		Results: []checks.Result{
 			{Name: "host_ssh_app_1", Code: "TCP_UNREACHABLE", Severity: checks.SeverityFail, Message: "connection refused"},
 		},
@@ -138,7 +141,7 @@ func TestFormatHealthIncludesSuppressedAndSuggestions(t *testing.T) {
 			{Action: "check_host_health", TargetHost: "app-1", Strategy: "capacity"},
 		},
 	})
-	for _, want := range []string{"[FAIL]", "highlight service_runtime_api [CONTAINER_OOMKILLED]", "recent_change 10:00 change deploy_event", "host_ssh_app_1 [TCP_UNREACHABLE]", "suppressed service_api", "suggest check_host_health target=app-1 strategy=capacity"} {
+	for _, want := range []string{"[FAIL]", "highlight service_runtime_api [CONTAINER_OOMKILLED]", "metric host_cpu_hot host app-1", "recent_change 10:00 change deploy_event", "host_ssh_app_1 [TCP_UNREACHABLE]", "suppressed service_api", "suggest check_host_health target=app-1 strategy=capacity"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
 	"github.com/alan666gg/ops-agent/internal/policy"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 )
 
 type Suggestion struct {
@@ -25,7 +26,8 @@ type Suggestion struct {
 }
 
 type ReportContext struct {
-	RecentChanges []TimelineEntry `json:"recent_changes,omitempty"`
+	RecentChanges []TimelineEntry             `json:"recent_changes,omitempty"`
+	MetricSignals []promapi.SignalObservation `json:"metric_signals,omitempty"`
 }
 
 type SuppressedCheck struct {
@@ -60,26 +62,27 @@ type ExternalSilence struct {
 }
 
 type Report struct {
-	Source           string            `json:"source"`
-	Key              string            `json:"key,omitempty"`
-	Project          string            `json:"project,omitempty"`
-	Env              string            `json:"env"`
-	Status           string            `json:"status"`
-	Summary          string            `json:"summary"`
-	Highlights       []string          `json:"highlights,omitempty"`
-	Fingerprint      string            `json:"fingerprint"`
-	TriggeredAt      time.Time         `json:"triggered_at"`
-	Results          []checks.Result   `json:"results"`
-	External         *ExternalAlert    `json:"external,omitempty"`
-	RecentChanges    []TimelineEntry   `json:"recent_changes,omitempty"`
-	Suggestions      []Suggestion      `json:"suggestions,omitempty"`
-	FailCount        int               `json:"fail_count"`
-	WarnCount        int               `json:"warn_count"`
-	SuppressedCount  int               `json:"suppressed_count"`
-	TotalChecks      int               `json:"total_checks"`
-	FailedChecks     []checks.Result   `json:"failed_checks,omitempty"`
-	WarningChecks    []checks.Result   `json:"warning_checks,omitempty"`
-	SuppressedChecks []SuppressedCheck `json:"suppressed_checks,omitempty"`
+	Source           string                      `json:"source"`
+	Key              string                      `json:"key,omitempty"`
+	Project          string                      `json:"project,omitempty"`
+	Env              string                      `json:"env"`
+	Status           string                      `json:"status"`
+	Summary          string                      `json:"summary"`
+	Highlights       []string                    `json:"highlights,omitempty"`
+	Fingerprint      string                      `json:"fingerprint"`
+	TriggeredAt      time.Time                   `json:"triggered_at"`
+	Results          []checks.Result             `json:"results"`
+	External         *ExternalAlert              `json:"external,omitempty"`
+	RecentChanges    []TimelineEntry             `json:"recent_changes,omitempty"`
+	MetricSignals    []promapi.SignalObservation `json:"metric_signals,omitempty"`
+	Suggestions      []Suggestion                `json:"suggestions,omitempty"`
+	FailCount        int                         `json:"fail_count"`
+	WarnCount        int                         `json:"warn_count"`
+	SuppressedCount  int                         `json:"suppressed_count"`
+	TotalChecks      int                         `json:"total_checks"`
+	FailedChecks     []checks.Result             `json:"failed_checks,omitempty"`
+	WarningChecks    []checks.Result             `json:"warning_checks,omitempty"`
+	SuppressedChecks []SuppressedCheck           `json:"suppressed_checks,omitempty"`
 }
 
 func SilenceStatus(silence *ExternalSilence, now time.Time) string {
@@ -118,6 +121,7 @@ func BuildReportWithContext(source, envName string, env config.Environment, resu
 		TotalChecks: len(results),
 	}
 	report.RecentChanges = trimRecentChanges(ctx.RecentChanges, 3)
+	report.MetricSignals = trimMetricSignals(ctx.MetricSignals, 6)
 	suppressions := BuildSuppressions(env, results)
 	var actionable []checks.Result
 
@@ -313,6 +317,7 @@ func BuildSuggestionsWithContext(envName string, env config.Environment, results
 		}
 		host, hasHost := serviceHost(env, svc)
 		change := latestRelevantChange(ctx.RecentChanges, svc, host, hasHost)
+		metricSignals := relevantMetricSignals(ctx.MetricSignals, svc, host, hasHost)
 		changeHint := formatChangeHint(change)
 		if strings.TrimSpace(svc.HealthcheckURL) != "" {
 			strategy := "investigate"
@@ -329,33 +334,45 @@ func BuildSuggestionsWithContext(envName string, env config.Environment, results
 			})
 		}
 		if hasHost {
-			switch serviceRemediationStrategy(items, change) {
+			switch serviceRemediationStrategy(items, change, metricSignals) {
 			case "capacity":
+				reason := fmt.Sprintf("%s on %s shows OOM or restart pressure; inspect host capacity before restart", svc.Name, host.Name)
+				if hint := primaryMetricHint(metricSignals, "capacity"); hint != "" {
+					reason = fmt.Sprintf("%s on %s shows saturation signal %s; inspect host capacity before restart", svc.Name, host.Name, hint)
+				}
 				add(Suggestion{
 					Action:     "check_host_health",
 					TargetHost: host.Name,
 					Strategy:   "capacity",
-					Reason:     fmt.Sprintf("%s on %s shows OOM or restart pressure; inspect host capacity before restart", svc.Name, host.Name),
+					Reason:     reason,
 				})
 			case "change_regression":
+				reason := fmt.Sprintf("%s on %s started failing near %s; inspect rollout and rollback readiness", svc.Name, host.Name, changeHint)
+				if change == nil {
+					reason = fmt.Sprintf("%s on %s matches metric regression signal %s; inspect rollout and rollback readiness", svc.Name, host.Name, primaryMetricHint(metricSignals, "change_regression"))
+				}
 				add(Suggestion{
 					Action:     "check_host_health",
 					TargetHost: host.Name,
 					Strategy:   "change_regression",
-					Reason:     fmt.Sprintf("%s on %s started failing near %s; inspect rollout and rollback readiness", svc.Name, host.Name, changeHint),
+					Reason:     reason,
 				})
 			case "investigate":
-				if hasSystemdErrors(items) || hasRuntimeInstability(items) {
+				if hasSystemdErrors(items) || hasRuntimeInstability(items) || hasMetricStrategy(metricSignals, "investigate") {
+					reason := fmt.Sprintf("%s on %s needs runtime inspection before restart", svc.Name, host.Name)
+					if hint := primaryMetricHint(metricSignals, "investigate"); hint != "" {
+						reason = fmt.Sprintf("%s on %s matches metric signal %s; inspect runtime before restart", svc.Name, host.Name, hint)
+					}
 					add(Suggestion{
 						Action:     "check_host_health",
 						TargetHost: host.Name,
 						Strategy:   "investigate",
-						Reason:     fmt.Sprintf("%s on %s needs runtime inspection before restart", svc.Name, host.Name),
+						Reason:     reason,
 					})
 				}
 			}
 		}
-		if strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) != "" && shouldRestartContainer(items, change) {
+		if strings.EqualFold(strings.TrimSpace(svc.Type), "container") && strings.TrimSpace(svc.ContainerName) != "" && shouldRestartContainer(items, change, metricSignals) {
 			targetHost := ""
 			if hasHost {
 				targetHost = host.Name
@@ -385,6 +402,27 @@ func buildSummary(report Report) string {
 }
 
 func buildHighlights(report Report) []string {
+	active := prioritizedResults(report)
+	out := make([]string, 0, 4)
+	if report.Status != "ok" && len(report.RecentChanges) > 0 {
+		out = append(out, "recent change "+formatChangeHint(&report.RecentChanges[0]))
+	}
+	for _, item := range report.MetricSignals {
+		if len(out) >= 4 {
+			break
+		}
+		out = append(out, "metric "+promapi.FormatSignalObservation(item))
+	}
+	for _, item := range active {
+		if len(out) >= 4 {
+			break
+		}
+		out = append(out, fmt.Sprintf("%s [%s] %s", item.Name, item.Code, trimHighlight(item.Message)))
+	}
+	return out
+}
+
+func prioritizedResults(report Report) []checks.Result {
 	active := append([]checks.Result(nil), report.FailedChecks...)
 	active = append(active, report.WarningChecks...)
 	sort.SliceStable(active, func(i, j int) bool {
@@ -398,22 +436,7 @@ func buildHighlights(report Report) []string {
 		}
 		return pi < pj
 	})
-	limit := 4
-	if len(active) < limit {
-		limit = len(active)
-	}
-	out := make([]string, 0, limit)
-	if report.Status != "ok" && len(report.RecentChanges) > 0 {
-		out = append(out, "recent change "+formatChangeHint(&report.RecentChanges[0]))
-	}
-	for i := 0; i < limit; i++ {
-		item := active[i]
-		out = append(out, fmt.Sprintf("%s [%s] %s", item.Name, item.Code, trimHighlight(item.Message)))
-	}
-	if len(out) > 4 {
-		out = out[:4]
-	}
-	return out
+	return active
 }
 
 func resultPriority(item checks.Result) int {
@@ -596,12 +619,18 @@ func changeMatchesService(change TimelineEntry, svc config.Service, host config.
 	return false
 }
 
-func serviceRemediationStrategy(items []checks.Result, change *TimelineEntry) string {
-	if hasCode(items, "CONTAINER_OOMKILLED") {
+func serviceRemediationStrategy(items []checks.Result, change *TimelineEntry, metricSignals []promapi.SignalObservation) string {
+	if hasMetricStrategy(metricSignals, "capacity") || hasCode(items, "CONTAINER_OOMKILLED") {
 		return "capacity"
+	}
+	if hasMetricStrategy(metricSignals, "change_regression") {
+		return "change_regression"
 	}
 	if change != nil && (hasRuntimeInstability(items) || hasSystemdErrors(items) || hasHealthFailures(items) || hasCode(items, "CONTAINER_NOT_RUNNING") || hasCode(items, "CONTAINER_EXITED_NONZERO")) {
 		return "change_regression"
+	}
+	if hasMetricStrategy(metricSignals, "investigate") {
+		return "investigate"
 	}
 	if hasRuntimeInstability(items) || hasSystemdErrors(items) {
 		return "investigate"
@@ -609,14 +638,75 @@ func serviceRemediationStrategy(items []checks.Result, change *TimelineEntry) st
 	return ""
 }
 
-func shouldRestartContainer(items []checks.Result, change *TimelineEntry) bool {
+func shouldRestartContainer(items []checks.Result, change *TimelineEntry, metricSignals []promapi.SignalObservation) bool {
 	if change != nil {
+		return false
+	}
+	if hasMetricStrategy(metricSignals, "capacity") || hasMetricStrategy(metricSignals, "change_regression") {
 		return false
 	}
 	if hasCode(items, "CONTAINER_OOMKILLED") || hasCode(items, "CONTAINER_FLAPPING") || hasCode(items, "CONTAINER_RESTARTS_WARN") || hasCode(items, "CONTAINER_RECENT_RESTART") || hasCode(items, "CONTAINER_RESTARTING") {
 		return false
 	}
 	return hasCode(items, "CONTAINER_NOT_RUNNING") || hasCode(items, "CONTAINER_EXITED_NONZERO")
+}
+
+func relevantMetricSignals(items []promapi.SignalObservation, svc config.Service, host config.Host, hasHost bool) []promapi.SignalObservation {
+	out := make([]promapi.SignalObservation, 0, len(items))
+	serviceName := strings.ToLower(strings.TrimSpace(svc.Name))
+	containerName := strings.ToLower(strings.TrimSpace(svc.ContainerName))
+	systemdUnit := strings.ToLower(strings.TrimSpace(svc.SystemdUnit))
+	hostName := ""
+	hostAddr := ""
+	if hasHost {
+		hostName = strings.ToLower(strings.TrimSpace(host.Name))
+		hostAddr = strings.ToLower(strings.TrimSpace(host.Host))
+	}
+	for _, item := range items {
+		switch strings.ToLower(strings.TrimSpace(item.Scope)) {
+		case "env":
+			out = append(out, item)
+		case "host":
+			subject := strings.ToLower(strings.TrimSpace(item.Subject))
+			if hasHost && (subject == hostName || subject == hostAddr) {
+				out = append(out, item)
+			}
+		case "service":
+			subject := strings.ToLower(strings.TrimSpace(item.Subject))
+			if subject == serviceName || (containerName != "" && subject == containerName) || (systemdUnit != "" && subject == systemdUnit) {
+				out = append(out, item)
+			}
+		}
+	}
+	return out
+}
+
+func hasMetricStrategy(items []promapi.SignalObservation, strategy string) bool {
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Strategy), strategy) {
+			return true
+		}
+	}
+	return false
+}
+
+func primaryMetricHint(items []promapi.SignalObservation, strategy string) string {
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Strategy), strategy) {
+			return promapi.FormatSignalObservation(item)
+		}
+	}
+	return ""
+}
+
+func trimMetricSignals(items []promapi.SignalObservation, limit int) []promapi.SignalObservation {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) <= limit {
+		return append([]promapi.SignalObservation(nil), items...)
+	}
+	return append([]promapi.SignalObservation(nil), items[:limit]...)
 }
 
 func hasRuntimeInstability(items []checks.Result) bool {

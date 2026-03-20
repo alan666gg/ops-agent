@@ -24,15 +24,16 @@ type OpsAPIClient struct {
 }
 
 type HealthResponse struct {
-	Project          string                     `json:"project,omitempty"`
-	Env              string                     `json:"env"`
-	Status           string                     `json:"status"`
-	Results          []checks.Result            `json:"results"`
-	RecentChanges    []incident.TimelineEntry   `json:"recent_changes,omitempty"`
-	SuppressedChecks []incident.SuppressedCheck `json:"suppressed_checks"`
-	Suggestions      []incident.Suggestion      `json:"suggestions"`
-	Summary          string                     `json:"summary"`
-	Highlights       []string                   `json:"highlights,omitempty"`
+	Project          string                      `json:"project,omitempty"`
+	Env              string                      `json:"env"`
+	Status           string                      `json:"status"`
+	Results          []checks.Result             `json:"results"`
+	RecentChanges    []incident.TimelineEntry    `json:"recent_changes,omitempty"`
+	MetricSignals    []promapi.SignalObservation `json:"metric_signals,omitempty"`
+	SuppressedChecks []incident.SuppressedCheck  `json:"suppressed_checks"`
+	Suggestions      []incident.Suggestion       `json:"suggestions"`
+	Summary          string                      `json:"summary"`
+	Highlights       []string                    `json:"highlights,omitempty"`
 }
 
 type IncidentSummary struct {

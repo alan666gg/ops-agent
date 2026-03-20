@@ -4,6 +4,19 @@ environments:
     prometheus:
       base_url: http://127.0.0.1:9090
       timeout: 8s
+      signals:
+        - name: host_cpu_hot
+          scope: host
+          strategy: capacity
+          query: avg(rate(node_cpu_seconds_total{instance="${host_addr}:9100",mode!="idle"}[5m]))
+          comparator: above
+          threshold: 0.85
+        - name: service_error_rate
+          scope: service
+          strategy: change_regression
+          query: sum(rate(http_requests_errors_total{service="${service}",env="${env}"}[5m]))
+          comparator: above
+          threshold: 0.05
     hosts:
       - name: test-app-1
         host: 127.0.0.1
@@ -47,6 +60,19 @@ environments:
     prometheus:
       base_url: http://127.0.0.1:9090
       timeout: 8s
+      signals:
+        - name: host_cpu_hot
+          scope: host
+          strategy: capacity
+          query: avg(rate(node_cpu_seconds_total{instance="${host_addr}:9100",mode!="idle"}[5m]))
+          comparator: above
+          threshold: 0.85
+        - name: service_error_rate
+          scope: service
+          strategy: change_regression
+          query: sum(rate(http_requests_errors_total{service="${service}",env="${env}"}[5m]))
+          comparator: above
+          threshold: 0.05
     hosts: []
     services: []
     dependencies: []

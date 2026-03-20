@@ -25,9 +25,19 @@ type Environment struct {
 }
 
 type PrometheusConfig struct {
-	BaseURL        string        `yaml:"base_url,omitempty"`
-	BearerTokenEnv string        `yaml:"bearer_token_env,omitempty"`
-	Timeout        time.Duration `yaml:"timeout,omitempty"`
+	BaseURL        string             `yaml:"base_url,omitempty"`
+	BearerTokenEnv string             `yaml:"bearer_token_env,omitempty"`
+	Timeout        time.Duration      `yaml:"timeout,omitempty"`
+	Signals        []PrometheusSignal `yaml:"signals,omitempty"`
+}
+
+type PrometheusSignal struct {
+	Name       string  `yaml:"name"`
+	Scope      string  `yaml:"scope,omitempty"`
+	Strategy   string  `yaml:"strategy,omitempty"`
+	Query      string  `yaml:"query"`
+	Comparator string  `yaml:"comparator,omitempty"`
+	Threshold  float64 `yaml:"threshold"`
 }
 
 type Host struct {
@@ -280,6 +290,9 @@ func (p PrometheusConfig) WithDefaults() PrometheusConfig {
 	if p.Timeout <= 0 {
 		p.Timeout = 8 * time.Second
 	}
+	for i := range p.Signals {
+		p.Signals[i] = p.Signals[i].WithDefaults()
+	}
 	return p
 }
 
@@ -287,6 +300,9 @@ func (p PrometheusConfig) Validate(envName string) error {
 	if !p.Enabled() {
 		if strings.TrimSpace(p.BearerTokenEnv) != "" {
 			return fmt.Errorf("environment %q prometheus bearer_token_env requires base_url", envName)
+		}
+		if len(p.Signals) > 0 {
+			return fmt.Errorf("environment %q prometheus signals require base_url", envName)
 		}
 		return nil
 	}
@@ -302,6 +318,59 @@ func (p PrometheusConfig) Validate(envName string) error {
 	}
 	if p.Timeout <= 0 {
 		return fmt.Errorf("environment %q prometheus timeout must be > 0", envName)
+	}
+	seen := map[string]struct{}{}
+	for _, signal := range p.Signals {
+		signal = signal.WithDefaults()
+		if err := signal.Validate(envName); err != nil {
+			return err
+		}
+		if _, ok := seen[signal.Name]; ok {
+			return fmt.Errorf("environment %q prometheus has duplicate signal %q", envName, signal.Name)
+		}
+		seen[signal.Name] = struct{}{}
+	}
+	return nil
+}
+
+func (s PrometheusSignal) WithDefaults() PrometheusSignal {
+	if strings.TrimSpace(s.Scope) == "" {
+		s.Scope = "env"
+	}
+	if strings.TrimSpace(s.Strategy) == "" {
+		s.Strategy = "investigate"
+	}
+	if strings.TrimSpace(s.Comparator) == "" {
+		s.Comparator = "above"
+	}
+	return s
+}
+
+func (s PrometheusSignal) Validate(envName string) error {
+	s = s.WithDefaults()
+	if strings.TrimSpace(s.Name) == "" {
+		return fmt.Errorf("environment %q prometheus signal name is required", envName)
+	}
+	if err := validateScopedName("prometheus signal", s.Name); err != nil {
+		return fmt.Errorf("environment %q prometheus signal %q invalid: %w", envName, s.Name, err)
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Scope)) {
+	case "env", "host", "service":
+	default:
+		return fmt.Errorf("environment %q prometheus signal %q has unsupported scope %q", envName, s.Name, s.Scope)
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Strategy)) {
+	case "investigate", "capacity", "change_regression":
+	default:
+		return fmt.Errorf("environment %q prometheus signal %q has unsupported strategy %q", envName, s.Name, s.Strategy)
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Comparator)) {
+	case "above", "below":
+	default:
+		return fmt.Errorf("environment %q prometheus signal %q has unsupported comparator %q", envName, s.Name, s.Comparator)
+	}
+	if strings.TrimSpace(s.Query) == "" {
+		return fmt.Errorf("environment %q prometheus signal %q query is required", envName, s.Name)
 	}
 	return nil
 }

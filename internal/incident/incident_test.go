@@ -7,6 +7,7 @@ import (
 	"github.com/alan666gg/ops-agent/internal/checks"
 	"github.com/alan666gg/ops-agent/internal/config"
 	"github.com/alan666gg/ops-agent/internal/policy"
+	promapi "github.com/alan666gg/ops-agent/internal/prometheus"
 )
 
 func TestBuildSuggestionsForServiceAndHostFailures(t *testing.T) {
@@ -231,5 +232,66 @@ func TestBuildSuggestionsForOOMUseCapacityStrategy(t *testing.T) {
 	}
 	if !foundCapacity {
 		t.Fatalf("expected capacity suggestion, got %#v", report.Suggestions)
+	}
+}
+
+func TestBuildSuggestionsUsePrometheusCapacitySignalToSuppressRestart(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{{Name: "app-1", Host: "10.0.0.5"}},
+		Services: []config.Service{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api-1", HealthcheckURL: "http://10.0.0.5:8080/healthz"},
+		},
+	}
+	results := []checks.Result{
+		{Name: "service_runtime_api", Code: "CONTAINER_NOT_RUNNING", Severity: checks.SeverityFail, Message: "container status=exited"},
+	}
+	report := BuildReportWithContext("ops-scheduler", "prod", env, results, policy.Config{}, 0, ReportContext{
+		MetricSignals: []promapi.SignalObservation{
+			{Name: "host_cpu_hot", Scope: "host", Subject: "app-1", Strategy: "capacity", Comparator: "above", Threshold: 2, Value: 2.7},
+		},
+	})
+	foundCapacity := false
+	for _, item := range report.Suggestions {
+		if item.Action == "restart_container" {
+			t.Fatalf("did not expect restart suggestion with capacity signal, got %#v", report.Suggestions)
+		}
+		if item.Action == "check_host_health" && item.Strategy == "capacity" {
+			foundCapacity = true
+		}
+	}
+	if !foundCapacity {
+		t.Fatalf("expected capacity strategy from metric signal, got %#v", report.Suggestions)
+	}
+	if len(report.Highlights) == 0 || !strings.Contains(report.Highlights[0], "metric host_cpu_hot") {
+		t.Fatalf("expected metric signal in highlights, got %#v", report.Highlights)
+	}
+}
+
+func TestBuildSuggestionsUsePrometheusRegressionSignal(t *testing.T) {
+	env := config.Environment{
+		Hosts: []config.Host{{Name: "app-1", Host: "10.0.0.5"}},
+		Services: []config.Service{
+			{Name: "api", Host: "app-1", Type: "container", ContainerName: "api-1", HealthcheckURL: "http://10.0.0.5:8080/healthz"},
+		},
+	}
+	results := []checks.Result{
+		{Name: "service_runtime_api", Code: "CONTAINER_EXITED_NONZERO", Severity: checks.SeverityFail, Message: "exit_code=1"},
+	}
+	report := BuildReportWithContext("ops-scheduler", "prod", env, results, policy.Config{}, 0, ReportContext{
+		MetricSignals: []promapi.SignalObservation{
+			{Name: "service_error_rate", Scope: "service", Subject: "api", Strategy: "change_regression", Comparator: "above", Threshold: 0.05, Value: 0.22},
+		},
+	})
+	foundRegression := false
+	for _, item := range report.Suggestions {
+		if item.Action == "restart_container" {
+			t.Fatalf("did not expect restart suggestion with regression signal, got %#v", report.Suggestions)
+		}
+		if item.Action == "check_host_health" && item.Strategy == "change_regression" {
+			foundRegression = true
+		}
+	}
+	if !foundRegression {
+		t.Fatalf("expected change_regression strategy from metric signal, got %#v", report.Suggestions)
 	}
 }

@@ -295,10 +295,10 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `ops-scheduler --discover-interval` runs the same discovery/apply flow on a lower cadence than health checks, so new host services can join the next health cycle without a restart.
 - `host_ssh_*` remains the root-cause gate for host reachability; if SSH is already down, the incident layer suppresses dependent host resource/process checks to avoid duplicate noise.
 - `service_runtime_*` and `service_logs_*` are treated as service-scoped signals, so container flapping and recent systemd error logs show up in the same incident context as the parent service.
-- `/health` and `/health/run` responses now include `highlights`, plus recent change context and strategy-tagged suggestions so callers can distinguish restart candidates from likely release regressions or capacity issues.
+- `/health` and `/health/run` responses now include `highlights`, `metric_signals`, recent change context, and strategy-tagged suggestions so callers can distinguish restart candidates from likely release regressions or capacity issues.
 - `environments.<env>.project` adds a first-class project boundary; actions, incident summaries, and Telegram access control can now be scoped by project.
 - `audit-driver sqlite` + `incident-state-file` upgrades the control plane from append-only logs to a queryable state model with active incidents, acknowledgements, and ownership.
-- `environments.<env>.prometheus` lets the control plane read that environment's Prometheus as an external observability source without giving the bot write access.
+- `environments.<env>.prometheus` lets the control plane read that environment's Prometheus as an external observability source without giving the bot write access, and `prometheus.signals` can feed capacity or regression hints back into remediation suggestions.
 - `/alerts/alertmanager` lets external Alertmanager alerts join the same incident lifecycle; a dedicated `OPS_ALERT_TOKEN` keeps that webhook isolated from the main operator API token.
 - `GET /metrics` now also exports incident lifecycle gauges such as `ops_incident_open_records`, `ops_incident_reopen_total`, `ops_incident_resolution_total`, `ops_incident_avg_mtta_seconds`, and `ops_incident_avg_mttr_seconds`.
 - Environment health checks run concurrently while keeping a stable output order.
@@ -327,6 +327,7 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `/timeline <incident_id> [minutes]` and the inline `Timeline` button let responders inspect what changed shortly before an incident opened, including likely correlated deploy/runbook changes.
 - Telegram incident detail replies now append a short recent-change summary for the same `project + env`, so responders can see nearby deploy/config activity, release refs, commit SHAs, and pipeline links without opening the full timeline first.
 - `/promql <env> ...` and the `query_prometheus` LLM tool let responders pull Prometheus metrics and recent trends into the same Telegram workflow as incidents and approvals.
+- If `prometheus.signals` is configured, `/health` also surfaces triggered metric hints like host saturation or service error spikes, and those signals can downgrade blunt restarts into `capacity` or `change_regression` investigation paths.
 - The LLM also gets a `list_recent_changes` tool, so natural-language questions about deploys or config changes stay inside the same audited tool-calling path.
 - If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.
 - The LLM is a planner only: it can read health/incidents/pending requests and submit approve/reject/request actions through `ops-api`, so policy, approval, audit, and execution still stay in `ops-api` + `ops-worker`.
