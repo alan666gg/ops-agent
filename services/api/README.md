@@ -8,7 +8,7 @@ Run:
 export OPS_API_TOKEN=change-me
 export OPS_ALERT_TOKEN=change-me-alerts
 export OPS_ALERTMANAGER_API_TOKEN=change-me-alertmanager-api
-go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2 --alertmanager-sync-ack --alertmanager-silence-duration 2h
+go run ./cmd/ops-api --addr :8090 --env-file configs/environments.yaml --policy configs/policies.yaml --audit audit/api.db --audit-driver sqlite --incident-state-file audit/incidents.db --notify-config configs/notifications.yaml --notify-trigger-after 2 --notify-recovery-after 2 --alertmanager-sync-ack --alertmanager-silence-duration 2h --alertmanager-refresh-interval 5m
 ```
 
 Endpoints:
@@ -32,6 +32,7 @@ Endpoints:
 - `GET /incidents/get?id=<incident_id>` (Bearer token)
 - `GET /incidents/timeline?id=<incident_id>&minutes=90` (Bearer token)
 - `POST /incidents/ack` (Bearer token)
+- `POST /incidents/reconcile-alertmanager` (Bearer token)
 - `POST /incidents/unsilence` (Bearer token)
 - `POST /incidents/assign` (Bearer token)
 
@@ -53,6 +54,7 @@ Acknowledged incidents suppress duplicate notify repeats until the fingerprint c
 `GET /prometheus/query` supports instant queries by default, or range queries when `minutes` is set. `step` is optional and defaults to an auto-selected resolution.
 For Alertmanager, use a dedicated `OPS_ALERT_TOKEN` so webhook senders do not need the broader operator API token.
 If `--alertmanager-sync-ack` is enabled, acknowledging an Alertmanager-backed incident also creates an Alertmanager silence for the alert's original labels. Use `OPS_ALERTMANAGER_API_TOKEN` when the Alertmanager API itself requires auth.
+`--alertmanager-refresh-interval` periodically re-reads stored Alertmanager silences and updates local incident state if the silence was expired or changed externally. `POST /incidents/reconcile-alertmanager` runs the same reconciliation on demand, optionally scoped by `project`, `env`, or one incident `id`.
 `POST /incidents/unsilence` expires one stored Alertmanager silence and updates the same incident record so Telegram and timeline views immediately show `silence=expired`.
 `GET /metrics` now exports both API traffic counters and incident lifecycle gauges, including global and per-scope open/silenced counts plus average MTTA/MTTR.
 `--notify-config` replaces direct notifier flags with a routed notification policy that supports named receivers, silences, and maintenance windows.

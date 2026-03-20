@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ops-agent API
-  version: 0.3.6
+  version: 0.3.7
 servers:
   - url: http://127.0.0.1:8090
 components:
@@ -329,6 +329,27 @@ paths:
                   type: string
       responses:
         '200': { description: Incident acknowledged }
+  /incidents/reconcile-alertmanager:
+    post:
+      summary: Refresh stored Alertmanager silence state back into incident records
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: Optional incident id to reconcile
+                project:
+                  type: string
+                env:
+                  type: string
+                actor:
+                  type: string
+      responses:
+        '200': { description: Alertmanager silence reconciliation result }
   /incidents/unsilence:
     post:
       summary: Expire one Alertmanager silence attached to an incident

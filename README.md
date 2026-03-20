@@ -143,6 +143,7 @@ receivers:
 If an incident originated from Alertmanager and the API is started with `--alertmanager-sync-ack`, acknowledging that incident through `/incidents/ack`, Telegram `/ack`, or the LLM tool flow will also create a matching Alertmanager silence for the original alert labels.
 Use `OPS_ALERTMANAGER_API_TOKEN` when your Alertmanager API requires authentication, and tune the silence window with `--alertmanager-silence-duration`.
 Created silences are now stored as structured incident state and shown back in `/incidents/get`, Telegram incident detail, and timelines. You can later expire one through `/incidents/unsilence` or Telegram `/unsilence`.
+`ops-api` can also periodically reconcile stored Alertmanager silence state with `--alertmanager-refresh-interval` and `--alertmanager-refresh-timeout`, so manual silence expiry or external changes eventually flow back into the local incident record. You can trigger the same refresh on demand with `POST /incidents/reconcile-alertmanager`.
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
 
@@ -248,6 +249,10 @@ curl -s "http://127.0.0.1:8090/incidents/summary?minutes=60&project=core" -H "Au
 curl -s "http://127.0.0.1:8090/incidents/active?project=core" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/get?id=ops-scheduler|core|prod" -H "Authorization: Bearer $OPS_API_TOKEN"
 curl -s "http://127.0.0.1:8090/incidents/timeline?id=ops-scheduler|core|prod&minutes=90" -H "Authorization: Bearer $OPS_API_TOKEN"
+curl -s -X POST http://127.0.0.1:8090/incidents/reconcile-alertmanager \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -d '{"project":"core","env":"prod","actor":"ops-admin"}'
 curl -s -X POST http://127.0.0.1:8090/incidents/unsilence \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $OPS_API_TOKEN" \

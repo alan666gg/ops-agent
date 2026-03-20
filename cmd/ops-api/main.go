@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,8 @@ type server struct {
 	alertAPIToken string
 	syncAlertAck  bool
 	alertSilence  time.Duration
+	alertRefresh  time.Duration
+	alertTimeout  time.Duration
 	approvalStore approvalBackend
 	metrics       *apiMetrics
 	limiter       *rateLimiter
@@ -184,6 +187,34 @@ type incidentActionRequest struct {
 	Note  string `json:"note,omitempty"`
 }
 
+type alertmanagerReconcileRequest struct {
+	ID      string `json:"id,omitempty"`
+	Actor   string `json:"actor,omitempty"`
+	Project string `json:"project,omitempty"`
+	Env     string `json:"env,omitempty"`
+}
+
+type alertmanagerReconcileItem struct {
+	ID             string `json:"id"`
+	Project        string `json:"project,omitempty"`
+	Env            string `json:"env,omitempty"`
+	SilenceID      string `json:"silence_id,omitempty"`
+	PreviousStatus string `json:"previous_status,omitempty"`
+	CurrentStatus  string `json:"current_status,omitempty"`
+	Updated        bool   `json:"updated"`
+	Message        string `json:"message,omitempty"`
+}
+
+type alertmanagerReconcileResponse struct {
+	Status  string                      `json:"status"`
+	Checked int                         `json:"checked"`
+	Updated int                         `json:"updated"`
+	Expired int                         `json:"expired"`
+	Skipped int                         `json:"skipped"`
+	Failed  int                         `json:"failed"`
+	Items   []alertmanagerReconcileItem `json:"items,omitempty"`
+}
+
 type alertmanagerIngestResponse struct {
 	Status string            `json:"status"`
 	Count  int               `json:"count"`
@@ -218,6 +249,8 @@ func main() {
 	alertAPIToken := flag.String("alertmanager-api-token", os.Getenv("OPS_ALERTMANAGER_API_TOKEN"), "optional bearer token used when syncing Alertmanager silences")
 	syncAlertAck := flag.Bool("alertmanager-sync-ack", false, "when true, acknowledging an Alertmanager-backed incident also creates a silence in Alertmanager")
 	alertSilence := flag.Duration("alertmanager-silence-duration", 2*time.Hour, "silence duration used when --alertmanager-sync-ack is enabled")
+	alertRefresh := flag.Duration("alertmanager-refresh-interval", 5*time.Minute, "when >0, periodically refresh stored Alertmanager silence state back into local incidents")
+	alertTimeout := flag.Duration("alertmanager-refresh-timeout", 15*time.Second, "timeout used for one Alertmanager silence refresh cycle")
 	flag.Parse()
 	if err := notify.ValidateMinSeverity(*notifyMin); err != nil {
 		fmt.Println(err)
@@ -273,6 +306,8 @@ func main() {
 		alertAPIToken: strings.TrimSpace(*alertAPIToken),
 		syncAlertAck:  *syncAlertAck,
 		alertSilence:  *alertSilence,
+		alertRefresh:  *alertRefresh,
+		alertTimeout:  *alertTimeout,
 		approvalStore: store,
 		limiter:       newRateLimiter(*rateLimitWindow, *rateLimitMax),
 		notifyCtl: notify.NewController(notifierImpl, notify.NewSQLiteStore(*notifyStateFile), notify.ControllerOptions{
@@ -319,6 +354,7 @@ func main() {
 	mux.HandleFunc("/incidents/ack", s.handleAckIncident)
 	mux.HandleFunc("/incidents/unsilence", s.handleUnsilenceIncident)
 	mux.HandleFunc("/incidents/assign", s.handleAssignIncident)
+	mux.HandleFunc("/incidents/reconcile-alertmanager", s.handleReconcileAlertmanager)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "service": "ops-api"})
@@ -347,6 +383,10 @@ func main() {
 		mux.ServeHTTP(sw, r)
 		s.metricsRecord(r.URL.Path, sw.status, time.Since(start))
 	})
+
+	if s.alertRefresh > 0 && s.incidentStore != nil && s.auditStore != nil {
+		go s.runAlertmanagerReconciler()
+	}
 
 	fmt.Println("ops-api listening on", *addr)
 	fmt.Printf("approval store: driver=%s path=%s\n", *pendingDriver, *pendingFile)
@@ -1290,6 +1330,34 @@ func (s *server) handleUnsilenceIncident(w http.ResponseWriter, r *http.Request)
 	_ = json.NewEncoder(w).Encode(item)
 }
 
+func (s *server) handleReconcileAlertmanager(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if s.incidentStore == nil {
+		http.Error(w, `{"error":"incident store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+	var req alertmanagerReconcileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Actor) == "" {
+		req.Actor = "ops-api"
+	}
+	now := time.Now().UTC()
+	ctx, cancel := context.WithTimeout(r.Context(), s.alertmanagerTimeout())
+	defer cancel()
+	resp, err := s.reconcileAlertmanagerSilences(ctx, req, now)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 func (s *server) handleAssignIncident(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -1616,6 +1684,240 @@ func (s *server) expireAlertmanagerSilence(ctx context.Context, id, actor, note 
 		return incident.Record{}, err
 	}
 	return s.incidentStore.ExpireSilence(item.ID, actor, note, now)
+}
+
+func (s *server) runAlertmanagerReconciler() {
+	run := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), s.alertmanagerTimeout())
+		defer cancel()
+		resp, err := s.reconcileAlertmanagerSilences(ctx, alertmanagerReconcileRequest{Actor: "ops-api"}, time.Now().UTC())
+		if err != nil {
+			_ = s.auditStore.Append(audit.Event{
+				Time:    time.Now().UTC(),
+				Actor:   "ops-api",
+				Action:  "alertmanager_reconcile_cycle",
+				Status:  "failed",
+				Message: err.Error(),
+			})
+			return
+		}
+		if resp.Checked == 0 || (resp.Updated == 0 && resp.Expired == 0 && resp.Failed == 0) {
+			return
+		}
+		status := "ok"
+		if resp.Failed > 0 {
+			status = "warn"
+		}
+		_ = s.auditStore.Append(audit.Event{
+			Time:    time.Now().UTC(),
+			Actor:   "ops-api",
+			Action:  "alertmanager_reconcile_cycle",
+			Status:  status,
+			Message: fmt.Sprintf("checked=%d updated=%d expired=%d skipped=%d failed=%d", resp.Checked, resp.Updated, resp.Expired, resp.Skipped, resp.Failed),
+		})
+	}
+
+	run()
+	ticker := time.NewTicker(s.alertRefresh)
+	defer ticker.Stop()
+	for range ticker.C {
+		run()
+	}
+}
+
+func (s *server) alertmanagerTimeout() time.Duration {
+	if s.alertTimeout <= 0 {
+		return 15 * time.Second
+	}
+	return s.alertTimeout
+}
+
+func (s *server) reconcileAlertmanagerSilences(ctx context.Context, req alertmanagerReconcileRequest, now time.Time) (alertmanagerReconcileResponse, error) {
+	resp := alertmanagerReconcileResponse{Status: "ok"}
+	items, err := s.listAlertmanagerCandidates(req)
+	if err != nil {
+		return resp, err
+	}
+	for _, item := range items {
+		resp.Checked++
+		next, changed, expired, skipped, result, err := s.reconcileAlertmanagerSilenceState(ctx, item, req.Actor, now)
+		if skipped {
+			resp.Skipped++
+			if req.ID != "" {
+				resp.Items = append(resp.Items, result)
+			}
+			continue
+		}
+		if err != nil {
+			resp.Failed++
+			resp.Status = "warn"
+			resp.Items = append(resp.Items, result)
+			continue
+		}
+		if changed {
+			resp.Updated++
+			if expired {
+				resp.Expired++
+			}
+			_ = next
+			resp.Items = append(resp.Items, result)
+		} else if req.ID != "" {
+			resp.Items = append(resp.Items, result)
+		}
+	}
+	return resp, nil
+}
+
+func (s *server) listAlertmanagerCandidates(req alertmanagerReconcileRequest) ([]incident.Record, error) {
+	if strings.TrimSpace(req.ID) != "" {
+		item, ok, err := s.incidentStore.Get(req.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("incident not found: %s", req.ID)
+		}
+		return []incident.Record{item}, nil
+	}
+	filter := incident.Filter{
+		Env:    strings.TrimSpace(req.Env),
+		Source: "alertmanager",
+		Limit:  1000,
+	}
+	if project := strings.TrimSpace(req.Project); project != "" {
+		filter.Projects = []string{project}
+	}
+	return s.incidentStore.List(filter)
+}
+
+func (s *server) reconcileAlertmanagerSilenceState(ctx context.Context, item incident.Record, actor string, now time.Time) (incident.Record, bool, bool, bool, alertmanagerReconcileItem, error) {
+	result := alertmanagerReconcileItem{
+		ID:             item.ID,
+		Project:        item.Project,
+		Env:            item.Env,
+		PreviousStatus: incident.SilenceStatus(item.Silence, now),
+	}
+	if item.Silence != nil {
+		result.SilenceID = strings.TrimSpace(item.Silence.ID)
+	}
+	if item.External == nil || !strings.EqualFold(strings.TrimSpace(item.External.Provider), "alertmanager") {
+		result.Message = "incident is not backed by alertmanager"
+		return item, false, false, true, result, nil
+	}
+	if item.Silence == nil || strings.TrimSpace(item.Silence.ID) == "" {
+		result.Message = "incident has no stored silence to reconcile"
+		return item, false, false, true, result, nil
+	}
+	client := alerting.AlertmanagerClient{
+		BaseURL:     strings.TrimSpace(item.External.ExternalURL),
+		BearerToken: s.alertAPIToken,
+		HTTPClient:  newAlertmanagerHTTPClient(s.alertmanagerTimeout()),
+	}
+	remote, found, err := client.GetSilence(ctx, item.External.ExternalURL, item.Silence.ID)
+	if err != nil {
+		result.CurrentStatus = result.PreviousStatus
+		result.Message = err.Error()
+		return item, false, false, false, result, err
+	}
+	nextSilence := reconciledSilence(item.Silence, remote, found, now)
+	result.SilenceID = nextSilence.ID
+	result.CurrentStatus = incident.SilenceStatus(&nextSilence, now)
+	if silencesEqual(item.Silence, &nextSilence) {
+		result.Message = "no silence state change"
+		return item, false, false, false, result, nil
+	}
+	updated, err := s.incidentStore.SetSilence(item.ID, nextSilence, now)
+	if err != nil {
+		result.Message = err.Error()
+		return item, false, false, false, result, err
+	}
+	result.Updated = true
+	result.Message = fmt.Sprintf("silence %s -> %s id=%s", defaultString(result.PreviousStatus, "none"), defaultString(result.CurrentStatus, "none"), result.SilenceID)
+	status := "ok"
+	if result.CurrentStatus == "expired" {
+		status = "expired"
+	}
+	_ = s.auditStore.Append(audit.Event{
+		Time:    now,
+		Actor:   defaultString(actor, "ops-api"),
+		Action:  "alertmanager_reconcile",
+		Project: updated.Project,
+		Env:     updated.Env,
+		Target:  updated.ID,
+		Status:  status,
+		Message: result.Message,
+	})
+	return updated, true, result.CurrentStatus == "expired" && result.PreviousStatus != "expired", false, result, nil
+}
+
+func reconciledSilence(local *incident.ExternalSilence, remote alerting.GettableSilence, found bool, now time.Time) incident.ExternalSilence {
+	if found {
+		next := incident.ExternalSilence{
+			ID:        strings.TrimSpace(remote.ID),
+			Status:    strings.ToLower(strings.TrimSpace(remote.Status.State)),
+			CreatedBy: strings.TrimSpace(remote.CreatedBy),
+			Comment:   strings.TrimSpace(remote.Comment),
+			StartsAt:  remote.StartsAt.UTC(),
+			EndsAt:    remote.EndsAt.UTC(),
+			UpdatedAt: remote.UpdatedAt.UTC(),
+		}
+		if next.ID == "" && local != nil {
+			next.ID = strings.TrimSpace(local.ID)
+		}
+		if next.UpdatedAt.IsZero() {
+			next.UpdatedAt = now.UTC()
+		}
+		if incident.SilenceStatus(&next, now) == "expired" {
+			next.Status = "expired"
+			if local != nil && !local.ExpiredAt.IsZero() {
+				next.ExpiredAt = local.ExpiredAt.UTC()
+				next.ExpiredBy = strings.TrimSpace(local.ExpiredBy)
+			} else {
+				next.ExpiredAt = now.UTC()
+				next.ExpiredBy = "alertmanager"
+			}
+		}
+		return next
+	}
+	next := incident.ExternalSilence{}
+	if local != nil {
+		next = *local
+	}
+	next.ID = strings.TrimSpace(next.ID)
+	next.Status = "expired"
+	if next.ExpiredAt.IsZero() {
+		next.ExpiredAt = now.UTC()
+	}
+	if strings.TrimSpace(next.ExpiredBy) == "" {
+		next.ExpiredBy = "alertmanager"
+	}
+	next.UpdatedAt = now.UTC()
+	return next
+}
+
+func silencesEqual(a, b *incident.ExternalSilence) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.TrimSpace(a.ID) == strings.TrimSpace(b.ID) &&
+		strings.TrimSpace(a.Status) == strings.TrimSpace(b.Status) &&
+		strings.TrimSpace(a.CreatedBy) == strings.TrimSpace(b.CreatedBy) &&
+		strings.TrimSpace(a.Comment) == strings.TrimSpace(b.Comment) &&
+		timesEqual(a.StartsAt, b.StartsAt) &&
+		timesEqual(a.EndsAt, b.EndsAt) &&
+		timesEqual(a.ExpiredAt, b.ExpiredAt) &&
+		strings.TrimSpace(a.ExpiredBy) == strings.TrimSpace(b.ExpiredBy) &&
+		timesEqual(a.UpdatedAt, b.UpdatedAt)
+}
+
+func timesEqual(a, b time.Time) bool {
+	if a.IsZero() || b.IsZero() {
+		return a.IsZero() && b.IsZero()
+	}
+	return a.UTC().Equal(b.UTC())
 }
 
 func prometheusClientForEnv(env config.Environment) (promapi.Client, time.Duration, error) {

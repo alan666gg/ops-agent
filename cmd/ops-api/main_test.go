@@ -512,6 +512,102 @@ func TestHandleUnsilenceIncidentExpiresAlertmanagerSilence(t *testing.T) {
 	}
 }
 
+func TestHandleReconcileAlertmanagerRefreshesExpiredSilence(t *testing.T) {
+	now := time.Now().UTC()
+	store := &incident.MemoryStore{}
+	rec, err := store.SyncReport(incident.Report{
+		Source:      "alertmanager",
+		Key:         "fp-1",
+		Project:     "core",
+		Env:         "prod",
+		Status:      "fail",
+		Summary:     "external alert",
+		Fingerprint: "fp-1",
+		FailCount:   1,
+		External: &incident.ExternalAlert{
+			Provider:    "alertmanager",
+			ExternalURL: "http://alertmanager.test",
+			Labels:      map[string]string{"alertname": "HighErrorRate"},
+		},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.SetSilence(rec.ID, incident.ExternalSilence{
+		ID:        "sil-123",
+		Status:    "active",
+		CreatedBy: "tg:@ops",
+		Comment:   "acked",
+		StartsAt:  now.Add(-30 * time.Minute),
+		EndsAt:    now.Add(2 * time.Hour),
+		UpdatedAt: now,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prevFactory := newAlertmanagerHTTPClient
+	newAlertmanagerHTTPClient = func(timeout time.Duration) *http.Client {
+		return &http.Client{Transport: promRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method != http.MethodGet {
+				t.Fatalf("unexpected method: %s", r.Method)
+			}
+			if r.URL.Path != "/api/v2/silence/sil-123" {
+				t.Fatalf("unexpected reconcile path: %s", r.URL.Path)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer api-token" {
+				t.Fatalf("unexpected auth header: %q", got)
+			}
+			return promJSONResponse(http.StatusNotFound, `not found`), nil
+		})}
+	}
+	defer func() { newAlertmanagerHTTPClient = prevFactory }()
+
+	auditFile := filepath.Join(t.TempDir(), "audit.jsonl")
+	s := &server{
+		auditStore:    audit.JSONLStore{Path: auditFile},
+		incidentStore: store,
+		alertAPIToken: "api-token",
+		alertTimeout:  5 * time.Second,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/incidents/reconcile-alertmanager", bytes.NewBufferString(`{"id":"`+rec.ID+`","actor":"tg:@ops"}`))
+	rr := httptest.NewRecorder()
+
+	s.handleReconcileAlertmanager(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp alertmanagerReconcileResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Checked != 1 || resp.Updated != 1 || resp.Expired != 1 || resp.Failed != 0 {
+		t.Fatalf("unexpected reconcile response: %+v", resp)
+	}
+	item, ok, err := store.Get(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || item.Silence == nil || incident.SilenceStatus(item.Silence, now) != "expired" || item.Silence.ExpiredBy != "alertmanager" {
+		t.Fatalf("unexpected reconciled incident: %+v", item)
+	}
+	events, err := audit.RecentEvents(auditFile, audit.Query{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, evt := range events {
+		if evt.Action == "alertmanager_reconcile" && evt.Status == "expired" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("unexpected reconcile audit trail: %+v", events)
+	}
+}
+
 type promRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f promRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
