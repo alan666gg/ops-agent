@@ -94,6 +94,8 @@ paths:
                   type: string
                 reference:
                   type: string
+                revision:
+                  type: string
                 url:
                   type: string
       responses:
@@ -124,7 +126,7 @@ paths:
         '200': { description: GitLab webhook stored as change event }
   /changes/recent:
     get:
-      summary: List recent change/deploy events from audit
+      summary: List recent change/deploy events from audit, including reference, revision, and link metadata when available
       parameters:
         - in: query
           name: project

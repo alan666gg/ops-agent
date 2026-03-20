@@ -44,7 +44,7 @@ func TestSQLiteStoreListByProject(t *testing.T) {
 	store := SQLiteStore{Path: filepath.Join(t.TempDir(), "audit.db")}
 	now := time.Now().UTC()
 	for _, evt := range []Event{
-		{Time: now.Add(-2 * time.Minute), Action: "health_cycle", Project: "payments", Env: "prod", Status: "fail", Target: "prod/service_api"},
+		{Time: now.Add(-2 * time.Minute), Action: "health_cycle", Project: "payments", Env: "prod", Status: "fail", Target: "prod/service_api", Reference: "v1.2.3", Revision: "abcdef123456", URL: "https://ci.example/run/1"},
 		{Time: now.Add(-1 * time.Minute), Action: "health_cycle", Project: "search", Env: "prod", Status: "ok", Target: "prod/service_search"},
 	} {
 		if err := store.Append(evt); err != nil {
@@ -57,5 +57,8 @@ func TestSQLiteStoreListByProject(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Project != "payments" {
 		t.Fatalf("unexpected sqlite project-filtered events: %+v", events)
+	}
+	if events[0].Reference != "v1.2.3" || events[0].Revision != "abcdef123456" || events[0].URL != "https://ci.example/run/1" {
+		t.Fatalf("expected sqlite to preserve release metadata, got %+v", events[0])
 	}
 }

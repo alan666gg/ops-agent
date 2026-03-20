@@ -18,6 +18,9 @@ type TimelineEntry struct {
 	Actor        string    `json:"actor,omitempty"`
 	Target       string    `json:"target,omitempty"`
 	TargetHost   string    `json:"target_host,omitempty"`
+	Reference    string    `json:"reference,omitempty"`
+	Revision     string    `json:"revision,omitempty"`
+	URL          string    `json:"url,omitempty"`
 	Message      string    `json:"message,omitempty"`
 	LikelyChange bool      `json:"likely_change,omitempty"`
 }
@@ -112,6 +115,9 @@ func timelineEntry(evt audit.Event, record Record) TimelineEntry {
 		Actor:      strings.TrimSpace(evt.Actor),
 		Target:     strings.TrimSpace(evt.Target),
 		TargetHost: strings.TrimSpace(evt.TargetHost),
+		Reference:  strings.TrimSpace(evt.Reference),
+		Revision:   strings.TrimSpace(evt.Revision),
+		URL:        strings.TrimSpace(evt.URL),
 		Message:    strings.TrimSpace(evt.Message),
 	}
 	entry.LikelyChange = kind == "change" && likelyCorrelated(evt.Time, record.FirstSeenAt)

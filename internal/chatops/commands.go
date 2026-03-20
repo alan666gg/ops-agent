@@ -641,6 +641,15 @@ func formatTimelineEntry(item incident.TimelineEntry) string {
 	if strings.TrimSpace(item.Target) != "" {
 		parts = append(parts, "target="+trimForChat(item.Target, 60))
 	}
+	if strings.TrimSpace(item.Reference) != "" {
+		parts = append(parts, "ref="+trimForChat(item.Reference, 40))
+	}
+	if strings.TrimSpace(item.Revision) != "" {
+		parts = append(parts, "rev="+trimForChat(item.Revision, 16))
+	}
+	if strings.TrimSpace(item.URL) != "" {
+		parts = append(parts, "link="+trimForChat(item.URL, 72))
+	}
 	if strings.TrimSpace(item.Message) != "" {
 		parts = append(parts, trimForChat(item.Message, 90))
 	}

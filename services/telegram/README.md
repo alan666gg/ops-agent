@@ -80,7 +80,7 @@ Interaction notes:
 - High-risk LLM-created operations render `Confirm / Cancel` buttons backed by the same pending confirmation store as the text replies
 - `/show <request_id>` returns one request's full detail and, if it is still pending, renders approve/reject buttons for that exact request
 - `/incident <incident_id>` returns one incident's detail and shows structured `external` / `silence` state; if the incident is still open or still silenced, it renders the relevant buttons for that exact incident
-- `/incident <incident_id>` also appends a short recent-change summary for the same project/environment when deploy or config markers exist nearby
+- `/incident <incident_id>` also appends a short recent-change summary for the same project/environment when deploy or config markers exist nearby, including release refs, commit SHAs, and pipeline links when providers send them
 - `/timeline <incident_id> [minutes]` summarizes recent audit events and likely correlated changes around one incident
 - `/changes [env] [minutes]` lists recent deploy, rollback, maintenance, and config events in chat without requiring the full incident timeline
 - `/promql <env> ...` returns either an instant Prometheus value or a short range summary for the selected environment

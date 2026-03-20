@@ -30,9 +30,9 @@ func (s SQLiteStore) Append(evt Event) error {
 	}
 	defer db.Close()
 	_, err = db.Exec(`
-INSERT INTO audit_events(time, actor, action, project, env, target_host, target, status, message, requires_approval)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, evt.Time.UTC().Format(time.RFC3339Nano), evt.Actor, evt.Action, defaultProject(evt.Project), evt.Env, evt.TargetHost, evt.Target, evt.Status, evt.Message, boolToInt(evt.RequiresOK))
+INSERT INTO audit_events(time, actor, action, project, env, target_host, target, reference, revision, url, status, message, requires_approval)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, evt.Time.UTC().Format(time.RFC3339Nano), evt.Actor, evt.Action, defaultProject(evt.Project), evt.Env, evt.TargetHost, evt.Target, evt.Reference, evt.Revision, evt.URL, evt.Status, evt.Message, boolToInt(evt.RequiresOK))
 	return err
 }
 
@@ -87,7 +87,7 @@ func (s SQLiteStore) List(q Query) ([]Event, error) {
 	defer db.Close()
 
 	query := `
-SELECT time, actor, action, project, env, target_host, target, status, message, requires_approval
+SELECT time, actor, action, project, env, target_host, target, reference, revision, url, status, message, requires_approval
 FROM audit_events
 WHERE 1=1
 `
@@ -129,7 +129,7 @@ WHERE 1=1
 		var evt Event
 		var at string
 		var requiresApproval int
-		if err := rows.Scan(&at, &evt.Actor, &evt.Action, &evt.Project, &evt.Env, &evt.TargetHost, &evt.Target, &evt.Status, &evt.Message, &requiresApproval); err != nil {
+		if err := rows.Scan(&at, &evt.Actor, &evt.Action, &evt.Project, &evt.Env, &evt.TargetHost, &evt.Target, &evt.Reference, &evt.Revision, &evt.URL, &evt.Status, &evt.Message, &requiresApproval); err != nil {
 			return nil, err
 		}
 		evt.Time, _ = time.Parse(time.RFC3339Nano, at)
@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   env TEXT NOT NULL DEFAULT '',
   target_host TEXT NOT NULL DEFAULT '',
   target TEXT NOT NULL DEFAULT '',
+  reference TEXT NOT NULL DEFAULT '',
+  revision TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT '',
   message TEXT NOT NULL DEFAULT '',
   requires_approval INTEGER NOT NULL DEFAULT 0
@@ -180,6 +183,15 @@ CREATE INDEX IF NOT EXISTS idx_audit_action_time ON audit_events(action, time DE
 	_, err = db.Exec(`ALTER TABLE audit_events ADD COLUMN project TEXT NOT NULL DEFAULT 'default'`)
 	if err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return err
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE audit_events ADD COLUMN reference TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_events ADD COLUMN revision TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE audit_events ADD COLUMN url TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
 	}
 	return nil
 }
@@ -222,7 +234,7 @@ func scanSQLiteEvent(row scanner) (Event, error) {
 	var evt Event
 	var at string
 	var requiresApproval int
-	if err := row.Scan(&at, &evt.Actor, &evt.Action, &evt.Project, &evt.Env, &evt.TargetHost, &evt.Target, &evt.Status, &evt.Message, &requiresApproval); err != nil {
+	if err := row.Scan(&at, &evt.Actor, &evt.Action, &evt.Project, &evt.Env, &evt.TargetHost, &evt.Target, &evt.Reference, &evt.Revision, &evt.URL, &evt.Status, &evt.Message, &requiresApproval); err != nil {
 		return Event{}, err
 	}
 	evt.Time, _ = time.Parse(time.RFC3339Nano, at)

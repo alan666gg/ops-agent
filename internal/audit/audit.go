@@ -20,6 +20,9 @@ type Event struct {
 	Env        string    `json:"env,omitempty"`
 	TargetHost string    `json:"target_host,omitempty"`
 	Target     string    `json:"target,omitempty"`
+	Reference  string    `json:"reference,omitempty"`
+	Revision   string    `json:"revision,omitempty"`
+	URL        string    `json:"url,omitempty"`
 	Status     string    `json:"status"`
 	Message    string    `json:"message,omitempty"`
 	RequiresOK bool      `json:"requires_approval,omitempty"`

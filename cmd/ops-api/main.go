@@ -234,6 +234,7 @@ type changeEventRequest struct {
 	Status     string    `json:"status,omitempty"`
 	Message    string    `json:"message"`
 	Reference  string    `json:"reference,omitempty"`
+	Revision   string    `json:"revision,omitempty"`
 	URL        string    `json:"url,omitempty"`
 }
 
@@ -1394,6 +1395,9 @@ func (s *server) handleRecentChanges(w http.ResponseWriter, r *http.Request) {
 			Actor:      strings.TrimSpace(evt.Actor),
 			Target:     strings.TrimSpace(evt.Target),
 			TargetHost: strings.TrimSpace(evt.TargetHost),
+			Reference:  strings.TrimSpace(evt.Reference),
+			Revision:   strings.TrimSpace(evt.Revision),
+			URL:        strings.TrimSpace(evt.URL),
 			Message:    strings.TrimSpace(evt.Message),
 		})
 		if len(items) >= limit {
@@ -1429,7 +1433,6 @@ func (s *server) buildChangeAuditEvent(req changeEventRequest) (audit.Event, err
 	if message == "" {
 		return audit.Event{}, fmt.Errorf("message required")
 	}
-	message = appendChangeMetadata(message, strings.TrimSpace(req.Reference), strings.TrimSpace(req.URL))
 	actor := strings.TrimSpace(req.Actor)
 	if actor == "" {
 		actor = "external-change"
@@ -1460,6 +1463,9 @@ func (s *server) buildChangeAuditEvent(req changeEventRequest) (audit.Event, err
 		Env:        envName,
 		TargetHost: targetHost,
 		Target:     target,
+		Reference:  normalizeChangeReference(req.Reference),
+		Revision:   shortRevision(req.Revision),
+		URL:        strings.TrimSpace(req.URL),
 		Status:     status,
 		Message:    message,
 	}, nil
@@ -1481,7 +1487,7 @@ func githubWebhookToChangeRequest(r *http.Request, payload githubChangeWebhook) 
 	action := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("action")), githubActionForEvent(eventType))
 	actor := firstNonEmptyString(payload.Sender.Login, "github:"+firstNonEmptyString(payload.Repository.FullName, payload.Repository.Name, "unknown"))
 	target := firstNonEmptyString(payload.Repository.FullName, payload.Repository.Name, envName)
-	reference, link, occurredAt, message := githubEventDetails(eventType, payload)
+	reference, revision, link, occurredAt, message := githubEventDetails(eventType, payload)
 	return changeEventRequest{
 		OccurredAt: occurredAt,
 		Kind:       kind,
@@ -1493,6 +1499,7 @@ func githubWebhookToChangeRequest(r *http.Request, payload githubChangeWebhook) 
 		Status:     githubStatusForEvent(eventType, payload),
 		Message:    message,
 		Reference:  reference,
+		Revision:   revision,
 		URL:        link,
 	}, nil
 }
@@ -1513,7 +1520,7 @@ func gitlabWebhookToChangeRequest(r *http.Request, payload gitlabChangeWebhook) 
 	action := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("action")), gitlabActionForEvent(eventType, payload))
 	actor := firstNonEmptyString(payload.UserName, "gitlab:"+firstNonEmptyString(payload.Project.PathWithNamespace, payload.Project.Name, "unknown"))
 	target := firstNonEmptyString(payload.Project.PathWithNamespace, payload.Project.Name, envName)
-	reference, link, occurredAt, message := gitlabEventDetails(eventType, payload)
+	reference, revision, link, occurredAt, message := gitlabEventDetails(eventType, payload)
 	return changeEventRequest{
 		OccurredAt: occurredAt,
 		Kind:       kind,
@@ -1525,6 +1532,7 @@ func gitlabWebhookToChangeRequest(r *http.Request, payload gitlabChangeWebhook) 
 		Status:     gitlabStatusForEvent(eventType, payload),
 		Message:    message,
 		Reference:  reference,
+		Revision:   revision,
 		URL:        link,
 	}, nil
 }
@@ -1582,17 +1590,6 @@ func normalizeChangeStatus(v string) string {
 	default:
 		return sanitizeChangeToken(status, "ok")
 	}
-}
-
-func appendChangeMetadata(message, reference, link string) string {
-	parts := []string{strings.TrimSpace(message)}
-	if reference != "" {
-		parts = append(parts, "ref="+reference)
-	}
-	if link != "" {
-		parts = append(parts, link)
-	}
-	return strings.Join(parts, " | ")
 }
 
 func githubEnvFromPayload(payload githubChangeWebhook) string {
@@ -1679,25 +1676,28 @@ func githubStatusForEvent(eventType string, payload githubChangeWebhook) string 
 	return "ok"
 }
 
-func githubEventDetails(eventType string, payload githubChangeWebhook) (reference, link string, occurredAt time.Time, message string) {
+func githubEventDetails(eventType string, payload githubChangeWebhook) (reference, revision, link string, occurredAt time.Time, message string) {
 	repo := firstNonEmptyString(payload.Repository.FullName, payload.Repository.Name, "unknown repo")
 	switch strings.ToLower(strings.TrimSpace(eventType)) {
 	case "deployment":
 		if payload.Deployment != nil {
-			reference = firstNonEmptyString(payload.Deployment.SHA, payload.Deployment.Ref)
+			reference = normalizeChangeReference(payload.Deployment.Ref)
+			revision = shortRevision(payload.Deployment.SHA)
 			occurredAt = time.Now().UTC()
-			message = firstNonEmptyString(payload.Deployment.Description, fmt.Sprintf("github deployment created for %s env=%s ref=%s", repo, payload.Deployment.Environment, payload.Deployment.Ref))
+			message = firstNonEmptyString(payload.Deployment.Description, fmt.Sprintf("github deployment created repo=%s env=%s task=%s", repo, defaultString(payload.Deployment.Environment, "unknown"), defaultString(payload.Deployment.Task, "deploy")))
 		}
 	case "deployment_status":
 		if payload.DeploymentStatus != nil {
-			reference = firstNonEmptyString(reference, payload.Deployment.SHA, payload.Deployment.Ref)
+			reference = normalizeChangeReference(payload.Deployment.Ref)
+			revision = shortRevision(payload.Deployment.SHA)
 			link = firstNonEmptyString(payload.DeploymentStatus.EnvironmentURL, payload.DeploymentStatus.LogURL, payload.DeploymentStatus.TargetURL, payload.Repository.HTMLURL)
 			occurredAt = firstNonZeroTime(payload.DeploymentStatus.UpdatedAt, payload.DeploymentStatus.CreatedAt)
-			message = firstNonEmptyString(payload.DeploymentStatus.Description, fmt.Sprintf("github deployment %s for %s env=%s", payload.DeploymentStatus.State, repo, githubEnvFromPayload(payload)))
+			message = firstNonEmptyString(payload.DeploymentStatus.Description, fmt.Sprintf("github deployment %s repo=%s env=%s", defaultString(payload.DeploymentStatus.State, "unknown"), repo, defaultString(githubEnvFromPayload(payload), "unknown")))
 		}
 	case "workflow_run":
 		if payload.WorkflowRun != nil {
-			reference = firstNonEmptyString(payload.WorkflowRun.HeadSHA, payload.WorkflowRun.HeadBranch)
+			reference = normalizeChangeReference(payload.WorkflowRun.HeadBranch)
+			revision = shortRevision(payload.WorkflowRun.HeadSHA)
 			link = firstNonEmptyString(payload.WorkflowRun.HTMLURL, payload.Repository.HTMLURL)
 			occurredAt = firstNonZeroTime(payload.WorkflowRun.UpdatedAt, payload.WorkflowRun.CreatedAt)
 			name := firstNonEmptyString(payload.WorkflowRun.Name, func() string {
@@ -1715,7 +1715,7 @@ func githubEventDetails(eventType string, payload githubChangeWebhook) (referenc
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
-	return reference, link, occurredAt, message
+	return reference, revision, link, occurredAt, message
 }
 
 func gitlabEnvFromPayload(payload gitlabChangeWebhook) string {
@@ -1786,28 +1786,68 @@ func normalizeGitlabPipelineStatus(status, detailed string) string {
 	}
 }
 
-func gitlabEventDetails(eventType string, payload gitlabChangeWebhook) (reference, link string, occurredAt time.Time, message string) {
+func gitlabEventDetails(eventType string, payload gitlabChangeWebhook) (reference, revision, link string, occurredAt time.Time, message string) {
 	project := firstNonEmptyString(payload.Project.PathWithNamespace, payload.Project.Name, "unknown project")
 	switch strings.ToLower(strings.TrimSpace(firstNonEmptyString(payload.ObjectKind, eventType))) {
 	case "pipeline":
-		reference = firstNonEmptyString(payload.ObjectAttributes.SHA, payload.CheckoutSHA, payload.After, payload.ObjectAttributes.Ref)
+		reference = normalizeChangeReference(payload.ObjectAttributes.Ref)
+		revision = shortRevision(firstNonEmptyString(payload.ObjectAttributes.SHA, payload.CheckoutSHA, payload.After))
 		link = firstNonEmptyString(payload.ObjectAttributes.URL, payload.Project.WebURL)
 		occurredAt = firstNonZeroTime(parseTimestamp(payload.ObjectAttributes.FinishedAt), parseTimestamp(payload.ObjectAttributes.CreatedAt))
 		message = fmt.Sprintf("gitlab pipeline %s project=%s ref=%s source=%s", defaultString(payload.ObjectAttributes.Status, "unknown"), project, defaultString(payload.ObjectAttributes.Ref, "unknown"), defaultString(payload.ObjectAttributes.Source, "unknown"))
 	case "release":
-		reference = firstNonEmptyString(payload.Release.Tag, payload.Ref)
+		reference = normalizeChangeReference(firstNonEmptyString(payload.Release.Tag, payload.Ref))
+		revision = shortRevision(firstNonEmptyString(payload.CheckoutSHA, payload.After))
 		link = payload.Project.WebURL
 		occurredAt = payload.Release.ReleasedAt
 		message = fmt.Sprintf("gitlab release %s project=%s tag=%s", defaultString(payload.Release.Action, "published"), project, defaultString(payload.Release.Tag, "unknown"))
 	default:
-		reference = firstNonEmptyString(payload.CheckoutSHA, payload.After, payload.Ref)
+		reference = normalizeChangeReference(payload.Ref)
+		revision = shortRevision(firstNonEmptyString(payload.CheckoutSHA, payload.After))
 		link = payload.Project.WebURL
 		message = fmt.Sprintf("gitlab change event %s project=%s", defaultString(eventType, "unknown"), project)
 	}
 	if occurredAt.IsZero() {
 		occurredAt = time.Now().UTC()
 	}
-	return reference, link, occurredAt, message
+	return reference, revision, link, occurredAt, message
+}
+
+func normalizeChangeReference(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	for _, prefix := range []string{"refs/heads/", "refs/tags/", "refs/remotes/origin/"} {
+		if strings.HasPrefix(v, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(v, prefix))
+		}
+	}
+	return v
+}
+
+func shortRevision(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) > 12 && isHexLike(v) {
+		return v[:12]
+	}
+	return v
+}
+
+func isHexLike(v string) bool {
+	if len(v) < 7 {
+		return false
+	}
+	for _, r := range v {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func parseTimestamp(v string) time.Time {

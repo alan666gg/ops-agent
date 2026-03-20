@@ -144,7 +144,7 @@ If an incident originated from Alertmanager and the API is started with `--alert
 Use `OPS_ALERTMANAGER_API_TOKEN` when your Alertmanager API requires authentication, and tune the silence window with `--alertmanager-silence-duration`.
 Created silences are now stored as structured incident state and shown back in `/incidents/get`, Telegram incident detail, and timelines. You can later expire one through `/incidents/unsilence` or Telegram `/unsilence`.
 `ops-api` can also periodically reconcile stored Alertmanager silence state with `--alertmanager-refresh-interval` and `--alertmanager-refresh-timeout`, so manual silence expiry or external changes eventually flow back into the local incident record. You can trigger the same refresh on demand with `POST /incidents/reconcile-alertmanager`.
-For deploy/change correlation, external systems can also post `POST /changes/events` with `env`, `message`, and optional `kind/reference/url`; those markers immediately become visible in `/changes/recent` and incident timelines.
+For deploy/change correlation, external systems can also post `POST /changes/events` with `env`, `message`, and optional `kind/reference/revision/url`; those markers immediately become visible in `/changes/recent` and incident timelines.
 If you prefer direct provider webhook ingestion, `ops-api` also supports `POST /changes/github` and `POST /changes/gitlab`. For safer integration, set a dedicated `OPS_CHANGE_TOKEN` so CI/CD systems do not need the broader operator API token.
 
 Telegram ChatOps (single chat, slash commands + optional OpenAI API LLM):
@@ -323,9 +323,9 @@ curl -s "http://127.0.0.1:8090/metrics"
 - `/pending` now includes `View / Approve / Reject` inline buttons, and high-risk LLM actions expose `Confirm / Cancel` buttons as a safer alternative to free-text confirmation.
 - `/active`, `/incident`, `/ack`, and `/assign` turn Telegram into a real incident room: responders can see what is currently open, acknowledge it, and claim ownership without leaving chat.
 - `/stats [env]` and `GET /incidents/stats` expose lifecycle aggregates such as open count, reopen count, mean time to acknowledge, and mean time to resolve.
-- `/changes [env] [minutes]` and `GET /changes/recent` expose recent deploy, rollback, maintenance, and config markers inside the same Telegram workflow.
+- `/changes [env] [minutes]` and `GET /changes/recent` expose recent deploy, rollback, maintenance, and config markers inside the same Telegram workflow, including structured ref/rev/link metadata when providers send it.
 - `/timeline <incident_id> [minutes]` and the inline `Timeline` button let responders inspect what changed shortly before an incident opened, including likely correlated deploy/runbook changes.
-- Telegram incident detail replies now append a short recent-change summary for the same `project + env`, so responders can see nearby deploy/config activity without opening the full timeline first.
+- Telegram incident detail replies now append a short recent-change summary for the same `project + env`, so responders can see nearby deploy/config activity, release refs, commit SHAs, and pipeline links without opening the full timeline first.
 - `/promql <env> ...` and the `query_prometheus` LLM tool let responders pull Prometheus metrics and recent trends into the same Telegram workflow as incidents and approvals.
 - The LLM also gets a `list_recent_changes` tool, so natural-language questions about deploys or config changes stay inside the same audited tool-calling path.
 - If `OPENAI_API_KEY` or `--openai-api-key` is configured, non-`/` Telegram messages are sent to the OpenAI Responses API with tool calling enabled.

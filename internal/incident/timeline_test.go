@@ -13,6 +13,7 @@ func TestTimelineBuilderCorrelatesChangesNearIncidentStart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.jsonl")
 	for _, evt := range []audit.Event{
 		{Time: now.Add(-20 * time.Minute), Actor: "tg:@ops", Action: "restart_container", Project: "core", Env: "prod", TargetHost: "app-1", Status: "ok", Message: "manual restart"},
+		{Time: now.Add(-15 * time.Minute), Actor: "ci:github-actions", Action: "deploy_event", Project: "core", Env: "prod", Target: "service/api", Reference: "v2026.03.20", Revision: "abcdef123456", URL: "https://ci.example/run/1", Status: "ok", Message: "github deployment success repo=org/api env=prod"},
 		{Time: now.Add(-10 * time.Minute), Actor: "ops-scheduler", Action: "health_run", Project: "core", Env: "prod", Target: "prod/service_api", Status: "failed", Message: "HTTP_DOWN: connection refused"},
 		{Time: now.Add(-5 * time.Minute), Actor: "tg:@lead", Action: "incident_ack", Project: "core", Env: "prod", Target: "ops-scheduler|core|prod", Status: "ok", Message: "investigating"},
 		{Time: now.Add(2 * time.Minute), Actor: "ops-api", Action: "notify", Project: "core", Env: "prod", Status: "ok", Message: "should be filtered"},
@@ -34,17 +35,20 @@ func TestTimelineBuilderCorrelatesChangesNearIncidentStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(timeline.Entries) != 3 {
+	if len(timeline.Entries) != 4 {
 		t.Fatalf("expected notify event to be filtered, got %+v", timeline.Entries)
 	}
 	if got := timeline.Entries[0].Action; got != "restart_container" {
 		t.Fatalf("expected entries sorted ascending, got first action %q", got)
 	}
-	if len(timeline.CorrelatedChanges) != 1 {
-		t.Fatalf("expected one correlated change, got %+v", timeline.CorrelatedChanges)
+	if len(timeline.CorrelatedChanges) != 2 {
+		t.Fatalf("expected two correlated changes, got %+v", timeline.CorrelatedChanges)
 	}
 	if !timeline.CorrelatedChanges[0].LikelyChange || timeline.CorrelatedChanges[0].Kind != "change" {
 		t.Fatalf("unexpected correlated change entry: %+v", timeline.CorrelatedChanges[0])
+	}
+	if timeline.CorrelatedChanges[0].Reference == "" || timeline.CorrelatedChanges[0].Revision == "" || timeline.CorrelatedChanges[0].URL == "" {
+		t.Fatalf("expected structured release metadata on correlated change: %+v", timeline.CorrelatedChanges[0])
 	}
 }
 

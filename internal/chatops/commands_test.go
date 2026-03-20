@@ -224,10 +224,10 @@ func TestFormatRecentChanges(t *testing.T) {
 		Env:           "prod",
 		Count:         1,
 		Items: []incident.TimelineEntry{
-			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "deploy_release", Status: "ok", Actor: "ci:github-actions", Target: "service/api"},
+			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "deploy_release", Status: "ok", Actor: "ci:github-actions", Target: "service/api", Reference: "v2026.03.20", Revision: "abcdef123456", URL: "https://ci.example/run/1"},
 		},
 	})
-	for _, want := range []string{"recent changes last 120 minutes", "env=prod", "projects=core", "deploy_release"} {
+	for _, want := range []string{"recent changes last 120 minutes", "env=prod", "projects=core", "deploy_release", "ref=v2026.03.20", "rev=abcdef123456", "link=https://ci.example/run/1"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}
@@ -293,11 +293,11 @@ func TestFormatIncidentDetailWithChanges(t *testing.T) {
 			WindowMinutes: 120,
 			Count:         1,
 			Items: []incident.TimelineEntry{
-				{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "deploy_release", Status: "ok", Actor: "ci:github-actions", Target: "service/api"},
+				{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "deploy_release", Status: "ok", Actor: "ci:github-actions", Target: "service/api", Reference: "v2026.03.20", Revision: "abcdef123456", URL: "https://ci.example/run/1"},
 			},
 		},
 	)
-	for _, want := range []string{"recent changes last 120 minutes", "deploy_release", "service/api"} {
+	for _, want := range []string{"recent changes last 120 minutes", "deploy_release", "service/api", "ref=v2026.03.20", "rev=abcdef123456"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}
@@ -309,14 +309,14 @@ func TestFormatIncidentTimeline(t *testing.T) {
 		Incident:      incident.Record{ID: "ops-scheduler|core|prod", Project: "core", Env: "prod", Status: "fail"},
 		WindowMinutes: 90,
 		CorrelatedChanges: []incident.TimelineEntry{
-			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "restart_container", Status: "ok", Actor: "tg:@ops", TargetHost: "app-1", LikelyChange: true},
+			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "restart_container", Status: "ok", Actor: "tg:@ops", TargetHost: "app-1", Reference: "v2026.03.20", Revision: "abcdef123456", URL: "https://ci.example/run/1", LikelyChange: true},
 		},
 		Entries: []incident.TimelineEntry{
-			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "restart_container", Status: "ok", Actor: "tg:@ops", TargetHost: "app-1", LikelyChange: true},
+			{Time: stringsToTime(t, "2026-03-18T10:00:00Z"), Kind: "change", Action: "restart_container", Status: "ok", Actor: "tg:@ops", TargetHost: "app-1", Reference: "v2026.03.20", Revision: "abcdef123456", URL: "https://ci.example/run/1", LikelyChange: true},
 			{Time: stringsToTime(t, "2026-03-18T10:05:00Z"), Kind: "signal", Action: "health_run", Status: "failed", Message: "HTTP_DOWN: connection refused"},
 		},
 	})
-	for _, want := range []string{"timeline ops-scheduler|core|prod last 90 minutes", "correlated 10:00 change restart_container", "events:", "10:05 signal health_run"} {
+	for _, want := range []string{"timeline ops-scheduler|core|prod last 90 minutes", "correlated 10:00 change restart_container", "ref=v2026.03.20", "rev=abcdef123456", "events:", "10:05 signal health_run"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in %q", want, text)
 		}

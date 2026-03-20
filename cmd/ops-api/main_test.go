@@ -210,8 +210,8 @@ func TestHandleChangeEventAndRecentChanges(t *testing.T) {
 	if evt.Project != "core" || evt.Env != "prod" || evt.Action != "deploy_event" || evt.Actor != "ci:github-actions" {
 		t.Fatalf("unexpected change event response: %+v", evt)
 	}
-	if !strings.Contains(evt.Message, "ref=git:abc123") || !strings.Contains(evt.Message, "https://ci.example/run/1") {
-		t.Fatalf("expected metadata in message, got %q", evt.Message)
+	if evt.Reference != "git:abc123" || evt.URL != "https://ci.example/run/1" {
+		t.Fatalf("expected structured metadata, got %+v", evt)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/changes/recent?env=prod&minutes=60&limit=10", nil)
@@ -229,6 +229,9 @@ func TestHandleChangeEventAndRecentChanges(t *testing.T) {
 	}
 	if resp.Items[0].Kind != "change" || resp.Items[0].Action != "deploy_event" || resp.Items[0].Actor != "ci:github-actions" {
 		t.Fatalf("unexpected change item: %+v", resp.Items[0])
+	}
+	if resp.Items[0].Reference != "git:abc123" || resp.Items[0].URL != "https://ci.example/run/1" {
+		t.Fatalf("expected structured change item metadata: %+v", resp.Items[0])
 	}
 }
 
@@ -248,7 +251,7 @@ func TestHandleGitHubChangeWebhook(t *testing.T) {
 		"action":"created",
 		"repository":{"full_name":"org/api","html_url":"https://github.com/org/api"},
 		"sender":{"login":"octocat"},
-		"deployment":{"environment":"prod","sha":"abc123","ref":"refs/heads/main","description":"ship api"},
+		"deployment":{"environment":"prod","sha":"abcdef1234567890","ref":"refs/tags/v2026.03.20","description":"ship api"},
 		"deployment_status":{"state":"success","environment_url":"https://api.example.com","updated_at":"2026-03-20T12:00:00Z"}
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/changes/github", bytes.NewBufferString(body))
@@ -268,6 +271,9 @@ func TestHandleGitHubChangeWebhook(t *testing.T) {
 	}
 	if evt.Actor != "octocat" || evt.Target != "org/api" {
 		t.Fatalf("unexpected github actor/target: %+v", evt)
+	}
+	if evt.Reference != "v2026.03.20" || evt.Revision != "abcdef123456" || evt.URL != "https://api.example.com" {
+		t.Fatalf("unexpected github metadata: %+v", evt)
 	}
 	if evt.Time.Format(time.RFC3339) != "2026-03-20T12:00:00Z" {
 		t.Fatalf("unexpected github event time: %s", evt.Time.Format(time.RFC3339))
@@ -292,7 +298,7 @@ func TestHandleGitLabChangeWebhook(t *testing.T) {
 		"project":{"path_with_namespace":"group/api","web_url":"https://gitlab.example/group/api"},
 		"object_attributes":{
 			"ref":"main",
-			"sha":"def456",
+			"sha":"def4561234567890",
 			"status":"success",
 			"source":"push",
 			"url":"https://gitlab.example/group/api/-/pipelines/1",
@@ -317,6 +323,9 @@ func TestHandleGitLabChangeWebhook(t *testing.T) {
 	}
 	if evt.Actor != "gitlab-bot" || evt.Target != "group/api" {
 		t.Fatalf("unexpected gitlab actor/target: %+v", evt)
+	}
+	if evt.Reference != "main" || evt.Revision != "def456123456" || evt.URL != "https://gitlab.example/group/api/-/pipelines/1" {
+		t.Fatalf("unexpected gitlab metadata: %+v", evt)
 	}
 	if evt.Time.Format(time.RFC3339) != "2026-03-20T13:00:00Z" {
 		t.Fatalf("unexpected gitlab event time: %s", evt.Time.Format(time.RFC3339))
