@@ -29,7 +29,7 @@ func main() {
 	chatopsConfig := flag.String("chatops-config", "configs/chatops.yaml", "chatops security config file")
 	openAIAPIKey := flag.String("openai-api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key for natural-language chat")
 	openAIBase := flag.String("openai-base", os.Getenv("OPENAI_BASE_URL"), "override OpenAI-compatible Responses API base url")
-	openAIModel := flag.String("openai-model", envOrDefault("OPENAI_MODEL", "gpt-5-mini"), "OpenAI model for natural-language chat")
+	openAIModel := flag.String("openai-model", envOrDefault("OPENAI_MODEL", "gpt-5.4"), "OpenAI model for natural-language chat")
 	llmStateFile := flag.String("llm-state-file", "audit/telegram-openai-response.txt", "file storing previous OpenAI response id")
 	llmConfirmFile := flag.String("llm-confirm-file", "audit/telegram-openai-confirmation.json", "file base used for pending natural-language confirmations")
 	llmMaxToolRounds := flag.Int("llm-max-tool-rounds", 6, "maximum number of tool-calling rounds for one Telegram message")

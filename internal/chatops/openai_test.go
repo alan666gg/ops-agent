@@ -28,7 +28,7 @@ func TestAgentRunExecutesToolCallAndPersistsResponseID(t *testing.T) {
 		var payload any
 		switch len(openAIRequests) {
 		case 1:
-			if got := body["model"]; got != "gpt-5-mini" {
+			if got := body["model"]; got != "gpt-5.4" {
 				t.Fatalf("unexpected model: %#v", got)
 			}
 			if _, ok := body["tools"].([]any); !ok {
@@ -86,7 +86,7 @@ func TestAgentRunExecutesToolCallAndPersistsResponseID(t *testing.T) {
 		OpenAI: OpenAIClient{
 			APIKey:  "test-key",
 			BaseURL: "http://openai.test",
-			Model:   "gpt-5-mini",
+			Model:   "gpt-5.4",
 			Client:  openAIClient,
 		},
 		OpsAPI: OpsAPIClient{
@@ -174,7 +174,7 @@ func TestAgentRequiresConfirmationForMutatingTool(t *testing.T) {
 		OpenAI: OpenAIClient{
 			APIKey:  "test-key",
 			BaseURL: "http://openai.test",
-			Model:   "gpt-5-mini",
+			Model:   "gpt-5.4",
 			Client:  openAIClient,
 		},
 		OpsAPI:        OpsAPIClient{BaseURL: "http://ops-api.test", Client: opsAPIClient},

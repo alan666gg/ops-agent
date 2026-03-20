@@ -152,7 +152,7 @@ export OPS_TG_BOT_TOKEN=123456:replace-me
 export OPENAI_API_KEY=<server_side_key>
 # optional when using an OpenAI-compatible gateway
 # export OPENAI_BASE_URL=https://your-gateway.example.com/v1
-# export OPENAI_MODEL=gpt-5-mini
+# export OPENAI_MODEL=gpt-5.4
 go run ./cmd/ops-telegram --api-base http://127.0.0.1:8090 --api-token "$OPS_API_TOKEN" --bot-token "$OPS_TG_BOT_TOKEN" --chat-id <your_chat_id> --chatops-config configs/chatops.yaml --openai-api-key "$OPENAI_API_KEY" --audit audit/telegram.jsonl
 ```
 

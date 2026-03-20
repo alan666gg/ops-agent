@@ -774,7 +774,7 @@ func (a Agent) modelOrDefault() string {
 	if strings.TrimSpace(a.OpenAI.Model) != "" {
 		return strings.TrimSpace(a.OpenAI.Model)
 	}
-	return "gpt-5-mini"
+	return "gpt-5.4"
 }
 
 func (c OpenAIClient) Create(ctx context.Context, req responseRequest) (responseAPIResponse, error) {
@@ -783,7 +783,7 @@ func (c OpenAIClient) Create(ctx context.Context, req responseRequest) (response
 		return out, fmt.Errorf("openai api key is empty")
 	}
 	if strings.TrimSpace(req.Model) == "" {
-		req.Model = "gpt-5-mini"
+		req.Model = "gpt-5.4"
 	}
 	if c.Client == nil {
 		c.Client = &http.Client{Timeout: 40 * time.Second}
